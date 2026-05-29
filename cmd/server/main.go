@@ -52,11 +52,9 @@ func main() {
 		defer cancel()
 
 		log.Info("cron: starting sync")
+		// RefreshFromABS also runs re-read detection internally.
 		if err := syncService.RefreshFromABS(ctx); err != nil {
 			log.Error("cron: refresh from ABS", "err", err)
-		}
-		if err := syncService.CheckReread(ctx); err != nil {
-			log.Error("cron: check reread", "err", err)
 		}
 		n, err := syncService.SyncAllProgress(ctx)
 		if err != nil {
@@ -77,12 +75,19 @@ func main() {
 		return c.Entry(entryID).Next
 	}
 
-	srv := web.NewServer(database, absClient, syncService, log, nextSync)
+	handler := web.NewServer(database, absClient, syncService, log, nextSync)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	log.Info("starting server", "addr", addr, "cron", cfg.CronSchedule, "tz", cfg.CronTimezone)
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 90 * time.Second, // generous for cover proxy streaming
+		IdleTimeout:  120 * time.Second,
+	}
 
-	if err := http.ListenAndServe(addr, srv); err != nil {
+	log.Info("starting server", "addr", addr, "cron", cfg.CronSchedule, "tz", cfg.CronTimezone)
+	if err := srv.ListenAndServe(); err != nil {
 		log.Error("server", "err", err)
 		os.Exit(1)
 	}

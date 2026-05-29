@@ -9,6 +9,23 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// BookStatus is the sync state of a book.
+type BookStatus string
+
+const (
+	StatusUnmatched BookStatus = "unmatched"
+	StatusMatched   BookStatus = "matched"
+	StatusIgnored   BookStatus = "ignored"
+)
+
+func (s BookStatus) Valid() bool {
+	switch s {
+	case StatusUnmatched, StatusMatched, StatusIgnored:
+		return true
+	}
+	return false
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS books (
 	id                        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,6 +34,7 @@ CREATE TABLE IF NOT EXISTS books (
 	abs_author                TEXT    NOT NULL DEFAULT '',
 	abs_isbn                  TEXT    NOT NULL DEFAULT '',
 	abs_asin                  TEXT    NOT NULL DEFAULT '',
+	abs_total_seconds         REAL    NOT NULL DEFAULT 0,
 	abs_current_seconds       REAL    NOT NULL DEFAULT 0,
 	abs_is_finished           INTEGER NOT NULL DEFAULT 0,
 	abs_last_seen_at          DATETIME,
@@ -57,12 +75,18 @@ BEGIN
 END;
 `
 
+// migrations run at startup; errors are ignored (column may already exist).
+var migrations = []string{
+	`ALTER TABLE books ADD COLUMN abs_total_seconds REAL NOT NULL DEFAULT 0`,
+}
+
 type DB struct {
 	sql *sql.DB
 }
 
 func Open(path string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
+	dsn := path + "?_journal_mode=WAL&_foreign_keys=on"
+	sqlDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -70,6 +94,9 @@ func Open(path string) (*DB, error) {
 
 	if _, err := sqlDB.Exec(schema); err != nil {
 		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	for _, m := range migrations {
+		_, _ = sqlDB.Exec(m) // ignore "duplicate column" error on re-runs
 	}
 
 	return &DB{sql: sqlDB}, nil
@@ -85,6 +112,7 @@ type Book struct {
 	ABSAuthor     string
 	ABSISBN       string
 	ABSASIN       string
+	ABSTotalSeconds    float64
 	ABSCurrentSeconds  float64
 	ABSIsFinished      bool
 	ABSLastSeenAt      *time.Time
@@ -99,7 +127,7 @@ type Book struct {
 	HCEditionFormat    string
 	HCEditionImageURL  string
 
-	Status               string
+	Status               BookStatus
 	LastSyncedSeconds    float64
 	LastSyncedIsFinished bool
 	LastSyncedAt         *time.Time
@@ -119,7 +147,7 @@ type Book struct {
 }
 
 func (b Book) NeedsSync() bool {
-	if b.Status != "matched" {
+	if b.Status != StatusMatched {
 		return false
 	}
 	if b.ABSIsFinished && !b.LastSyncedIsFinished {
@@ -138,7 +166,7 @@ type BooksByCategory struct {
 const selectAll = `
 SELECT
 	id, abs_item_id, abs_title, abs_author, abs_isbn, abs_asin,
-	abs_current_seconds, abs_is_finished, abs_last_seen_at,
+	abs_total_seconds, abs_current_seconds, abs_is_finished, abs_last_seen_at,
 	hc_edition_id, hc_book_id, hc_user_book_id, hc_user_book_read_id,
 	hc_edition_title, hc_edition_publisher, hc_edition_year, hc_edition_format, hc_edition_image_url,
 	status, last_synced_seconds, last_synced_is_finished, last_synced_at, pending_reread,
@@ -152,13 +180,14 @@ func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 	var b Book
 	var absLastSeen, lastSyncedAt sql.NullTime
 	var absIsFinished, lastSyncedIsFinished, pendingReread int
+	var status string
 
 	err := row.Scan(
 		&b.ID, &b.ABSItemID, &b.ABSTitle, &b.ABSAuthor, &b.ABSISBN, &b.ABSASIN,
-		&b.ABSCurrentSeconds, &absIsFinished, &absLastSeen,
+		&b.ABSTotalSeconds, &b.ABSCurrentSeconds, &absIsFinished, &absLastSeen,
 		&b.HCEditionID, &b.HCBookID, &b.HCUserBookID, &b.HCUserBookReadID,
 		&b.HCEditionTitle, &b.HCEditionPublisher, &b.HCEditionYear, &b.HCEditionFormat, &b.HCEditionImageURL,
-		&b.Status, &b.LastSyncedSeconds, &lastSyncedIsFinished, &lastSyncedAt, &pendingReread,
+		&status, &b.LastSyncedSeconds, &lastSyncedIsFinished, &lastSyncedAt, &pendingReread,
 		&b.CandidateEditionID, &b.CandidateBookID, &b.CandidateTitle, &b.CandidateAuthor,
 		&b.CandidatePublisher, &b.CandidateYear, &b.CandidateImageURL, &b.CandidateReason,
 		&b.CreatedAt, &b.UpdatedAt,
@@ -167,6 +196,7 @@ func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 		return Book{}, err
 	}
 
+	b.Status = BookStatus(status)
 	b.ABSIsFinished = absIsFinished != 0
 	b.LastSyncedIsFinished = lastSyncedIsFinished != 0
 	b.PendingReread = pendingReread != 0
@@ -181,20 +211,15 @@ func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 
 func (d *DB) GetBook(ctx context.Context, id int64) (Book, error) {
 	row := d.sql.QueryRowContext(ctx, selectAll+" WHERE id = ?", id)
-	return scanBook(row)
-}
-
-func (d *DB) GetBookByABSItemID(ctx context.Context, absItemID string) (Book, error) {
-	row := d.sql.QueryRowContext(ctx, selectAll+" WHERE abs_item_id = ?", absItemID)
 	b, err := scanBook(row)
 	if err == sql.ErrNoRows {
-		return Book{}, nil
+		return Book{}, fmt.Errorf("book %d not found", id)
 	}
 	return b, err
 }
 
 func (d *DB) ListAllBooks(ctx context.Context) ([]Book, error) {
-	rows, err := d.sql.QueryContext(ctx, selectAll+" ORDER BY created_at DESC")
+	rows, err := d.sql.QueryContext(ctx, selectAll+" ORDER BY created_at DESC, id DESC")
 	if err != nil {
 		return nil, err
 	}
@@ -220,9 +245,9 @@ func (d *DB) ListBooksByCategory(ctx context.Context) (BooksByCategory, error) {
 	var cats BooksByCategory
 	for _, b := range books {
 		switch {
-		case b.Status == "ignored":
+		case b.Status == StatusIgnored:
 			cats.Ignored = append(cats.Ignored, b)
-		case b.Status == "unmatched":
+		case b.Status == StatusUnmatched:
 			cats.Unmatched = append(cats.Unmatched, b)
 		case b.NeedsSync():
 			cats.NeedsSync = append(cats.NeedsSync, b)
@@ -233,16 +258,17 @@ func (d *DB) ListBooksByCategory(ctx context.Context) (BooksByCategory, error) {
 	return cats, nil
 }
 
-func (d *DB) UpsertABSBook(ctx context.Context, absItemID, title, author, isbn, asin string) error {
+func (d *DB) UpsertABSBook(ctx context.Context, absItemID, title, author, isbn, asin string, totalSeconds float64) error {
 	_, err := d.sql.ExecContext(ctx, `
-		INSERT INTO books (abs_item_id, abs_title, abs_author, abs_isbn, abs_asin)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO books (abs_item_id, abs_title, abs_author, abs_isbn, abs_asin, abs_total_seconds)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(abs_item_id) DO UPDATE SET
-			abs_title  = excluded.abs_title,
-			abs_author = excluded.abs_author,
-			abs_isbn   = CASE WHEN excluded.abs_isbn != '' THEN excluded.abs_isbn ELSE abs_isbn END,
-			abs_asin   = CASE WHEN excluded.abs_asin != '' THEN excluded.abs_asin ELSE abs_asin END
-	`, absItemID, title, author, isbn, asin)
+			abs_title        = excluded.abs_title,
+			abs_author       = excluded.abs_author,
+			abs_isbn         = CASE WHEN excluded.abs_isbn != '' THEN excluded.abs_isbn ELSE abs_isbn END,
+			abs_asin         = CASE WHEN excluded.abs_asin != '' THEN excluded.abs_asin ELSE abs_asin END,
+			abs_total_seconds = CASE WHEN excluded.abs_total_seconds > 0 THEN excluded.abs_total_seconds ELSE abs_total_seconds END
+	`, absItemID, title, author, isbn, asin, totalSeconds)
 	return err
 }
 
@@ -261,8 +287,11 @@ func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSec
 	return err
 }
 
-func (d *DB) SetStatus(ctx context.Context, id int64, status string) error {
-	_, err := d.sql.ExecContext(ctx, `UPDATE books SET status = ? WHERE id = ?`, status, id)
+func (d *DB) SetStatus(ctx context.Context, id int64, status BookStatus) error {
+	if !status.Valid() {
+		return fmt.Errorf("invalid status %q", status)
+	}
+	_, err := d.sql.ExecContext(ctx, `UPDATE books SET status = ? WHERE id = ?`, string(status), id)
 	return err
 }
 
@@ -290,22 +319,6 @@ func (d *DB) SetMatchCandidate(ctx context.Context, bookID int64, c MatchCandida
 			candidate_reason     = ?
 		WHERE id = ?
 	`, c.EditionID, c.BookID, c.Title, c.Author, c.Publisher, c.Year, c.ImageURL, c.Reason, bookID)
-	return err
-}
-
-func (d *DB) ClearMatchCandidate(ctx context.Context, bookID int64) error {
-	_, err := d.sql.ExecContext(ctx, `
-		UPDATE books SET
-			candidate_edition_id = NULL,
-			candidate_book_id    = NULL,
-			candidate_title      = '',
-			candidate_author     = '',
-			candidate_publisher  = '',
-			candidate_year       = '',
-			candidate_image_url  = '',
-			candidate_reason     = ''
-		WHERE id = ?
-	`, bookID)
 	return err
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -24,7 +25,7 @@ func New(baseURL, token string) *Client {
 	}
 }
 
-// --- types ---
+// ── types ──────────────────────────────────────────────────────────────────
 
 type librariesResponse struct {
 	Libraries []Library `json:"libraries"`
@@ -50,6 +51,7 @@ type LibraryItem struct {
 
 type mediaInfo struct {
 	Metadata bookMetadata `json:"metadata"`
+	Duration float64      `json:"duration"` // total audiobook length in seconds
 }
 
 type bookMetadata struct {
@@ -64,31 +66,31 @@ type inProgressResponse struct {
 }
 
 type inProgressItem struct {
-	ID            string          `json:"id"`
-	MediaProgress *MediaProgress  `json:"mediaProgress"`
-	Media         mediaInfo       `json:"media"`
+	ID            string         `json:"id"`
+	MediaProgress *MediaProgress `json:"mediaProgress"`
 }
 
 type MediaProgress struct {
 	IsFinished  bool    `json:"isFinished"`
 	Progress    float64 `json:"progress"`
 	CurrentTime float64 `json:"currentTime"`
-	LastUpdate  int64   `json:"lastUpdate"`
+	LastUpdate  int64   `json:"lastUpdate"` // milliseconds
 }
 
 // Book is the merged view of a library item + its progress.
 type Book struct {
-	ItemID     string
-	Title      string
-	Author     string
-	ISBN       string
-	ASIN       string
+	ItemID       string
+	Title        string
+	Author       string
+	ISBN         string
+	ASIN         string
+	TotalSeconds   float64
 	CurrentSeconds float64
 	IsFinished     bool
 	LastUpdate     time.Time
 }
 
-// --- API calls ---
+// ── API calls ──────────────────────────────────────────────────────────────
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
@@ -116,7 +118,6 @@ func (c *Client) GetLibraries(ctx context.Context) ([]Library, error) {
 	if err := c.get(ctx, "/api/libraries", &r); err != nil {
 		return nil, err
 	}
-	// only book libraries
 	var out []Library
 	for _, l := range r.Libraries {
 		if l.MediaType == "book" {
@@ -155,13 +156,13 @@ func (c *Client) GetItemsInProgress(ctx context.Context) ([]inProgressItem, erro
 }
 
 // GetAllBooks fetches all book-library items and merges in progress data.
+// Results are sorted alphabetically by title for deterministic ordering.
 func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 	libs, err := c.GetLibraries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("libraries: %w", err)
 	}
 
-	// Collect all library items
 	itemMap := map[string]LibraryItem{}
 	for _, lib := range libs {
 		items, err := c.GetLibraryItems(ctx, lib.ID)
@@ -173,7 +174,6 @@ func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 		}
 	}
 
-	// Collect progress
 	inProgress, err := c.GetItemsInProgress(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("items-in-progress: %w", err)
@@ -185,15 +185,15 @@ func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 		}
 	}
 
-	// Merge
 	books := make([]Book, 0, len(itemMap))
 	for id, item := range itemMap {
 		b := Book{
-			ItemID: id,
-			Title:  item.Media.Metadata.Title,
-			Author: item.Media.Metadata.AuthorName,
-			ISBN:   item.Media.Metadata.ISBN,
-			ASIN:   item.Media.Metadata.ASIN,
+			ItemID:       id,
+			Title:        item.Media.Metadata.Title,
+			Author:       item.Media.Metadata.AuthorName,
+			ISBN:         item.Media.Metadata.ISBN,
+			ASIN:         item.Media.Metadata.ASIN,
+			TotalSeconds: item.Media.Duration,
 		}
 		if p, ok := progressMap[id]; ok {
 			b.CurrentSeconds = p.CurrentTime
@@ -202,21 +202,21 @@ func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 		}
 		books = append(books, b)
 	}
+
+	sort.Slice(books, func(i, j int) bool {
+		return books[i].Title < books[j].Title
+	})
 	return books, nil
 }
 
 // BaseURL returns the configured ABS server base URL.
 func (c *Client) BaseURL() string { return c.baseURL }
 
-// CoverURL returns the URL for proxying an ABS cover image.
-// The actual proxying is done by the web server.
-func (c *Client) CoverURL(itemID string) string {
-	return c.baseURL + "/api/items/" + itemID + "/cover"
-}
-
-// ProxyCover fetches the cover image from ABS and returns the raw bytes + content type.
+// ProxyCover fetches the cover image from ABS and returns raw bytes + content type.
+// Returns an error if ABS responds with a non-image content type.
 func (c *Client) ProxyCover(ctx context.Context, itemID string) ([]byte, string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.CoverURL(itemID), nil)
+	url := c.baseURL + "/api/items/" + itemID + "/cover"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -232,6 +232,12 @@ func (c *Client) ProxyCover(ctx context.Context, itemID string) ([]byte, string,
 		return nil, "", fmt.Errorf("cover: status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	return body, resp.Header.Get("Content-Type"), err
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "image/") {
+		return nil, "", fmt.Errorf("cover: unexpected content-type %q", ct)
+	}
+
+	const maxCoverSize = 8 << 20 // 8 MB
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCoverSize))
+	return body, ct, err
 }

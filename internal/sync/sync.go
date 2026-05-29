@@ -11,10 +11,9 @@ import (
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/hardcover"
 )
 
-// rereadThreshold: if current progress drops below this after having been above highProgressThreshold
 const (
-	rereadThreshold     = 0.10 // 10%
-	highProgressThreshold = 0.85 // 85%
+	rereadThreshold      = 0.10 // drop below 10% …
+	highProgressThreshold = 0.85 // … after being above 85%
 )
 
 type Service struct {
@@ -29,7 +28,8 @@ func New(database *db.DB, absClient *abs.Client, hcClient *hardcover.Client, log
 }
 
 // RefreshFromABS fetches all books from ABS, upserts them into the DB,
-// updates progress, and runs auto-matching for newly discovered unmatched books.
+// updates progress, runs auto-matching for new unmatched books, and checks
+// for potential re-reads.
 func (s *Service) RefreshFromABS(ctx context.Context) error {
 	books, err := s.abs.GetAllBooks(ctx)
 	if err != nil {
@@ -37,7 +37,7 @@ func (s *Service) RefreshFromABS(ctx context.Context) error {
 	}
 
 	for _, b := range books {
-		if err := s.db.UpsertABSBook(ctx, b.ItemID, b.Title, b.Author, b.ISBN, b.ASIN); err != nil {
+		if err := s.db.UpsertABSBook(ctx, b.ItemID, b.Title, b.Author, b.ISBN, b.ASIN, b.TotalSeconds); err != nil {
 			s.log.Error("upsert book", "item_id", b.ItemID, "err", err)
 			continue
 		}
@@ -46,86 +46,86 @@ func (s *Service) RefreshFromABS(ctx context.Context) error {
 		if lastSeen.IsZero() {
 			lastSeen = time.Now()
 		}
-
 		if err := s.db.UpdateABSProgress(ctx, b.ItemID, b.CurrentSeconds, b.IsFinished, lastSeen); err != nil {
 			s.log.Error("update progress", "item_id", b.ItemID, "err", err)
-			continue
 		}
 	}
 
-	// Auto-match any unmatched books that don't yet have a candidate
 	all, err := s.db.ListAllBooks(ctx)
 	if err != nil {
 		return err
 	}
+
 	for _, book := range all {
-		if book.Status != "unmatched" {
-			continue
+		if book.Status == db.StatusUnmatched && book.CandidateEditionID == nil {
+			if err := s.autoMatch(ctx, book); err != nil {
+				s.log.Warn("auto-match failed", "book_id", book.ID, "title", book.ABSTitle, "err", err)
+			}
 		}
-		if book.CandidateEditionID != nil {
-			continue // already has a candidate
-		}
-		if err := s.autoMatch(ctx, book); err != nil {
-			s.log.Warn("auto-match failed", "book_id", book.ID, "title", book.ABSTitle, "err", err)
+		if book.Status == db.StatusMatched && !book.PendingReread {
+			s.checkReread(ctx, book)
 		}
 	}
 
 	return nil
 }
 
-// autoMatch tries ISBN → ASIN → title+author matching and stores the best candidate.
+// checkReread sets the pending_reread flag when ABS progress has reset near
+// the start after previously being near the end. Requires total_seconds to
+// be populated; skips silently if not available.
+func (s *Service) checkReread(ctx context.Context, b db.Book) {
+	if b.ABSTotalSeconds <= 0 || b.LastSyncedSeconds <= 0 {
+		return
+	}
+	lastPct := b.LastSyncedSeconds / b.ABSTotalSeconds
+	currPct := b.ABSCurrentSeconds / b.ABSTotalSeconds
+	if lastPct >= highProgressThreshold && currPct <= rereadThreshold {
+		if err := s.db.SetPendingReread(ctx, b.ID, true); err != nil {
+			s.log.Error("set pending reread", "book_id", b.ID, "err", err)
+		}
+	}
+}
+
+// autoMatch tries ISBN → ASIN → title+author and stores the best candidate.
 func (s *Service) autoMatch(ctx context.Context, book db.Book) error {
 	var editions []hardcover.Edition
 	var reason string
 
-	// Try ISBN
 	if book.ABSISBN != "" {
 		if e, err := s.hc.SearchByISBN(ctx, book.ABSISBN); err == nil && len(e) > 0 {
-			editions = e
-			reason = "isbn"
+			editions, reason = e, "isbn"
 		}
 	}
-
-	// Try ASIN
 	if len(editions) == 0 && book.ABSASIN != "" {
 		if e, err := s.hc.SearchByASIN(ctx, book.ABSASIN); err == nil && len(e) > 0 {
-			editions = e
-			reason = "asin"
+			editions, reason = e, "asin"
 		}
 	}
-
-	// Try title + author
 	if len(editions) == 0 && book.ABSTitle != "" {
 		if e, err := s.hc.SearchByTitleAuthor(ctx, book.ABSTitle, book.ABSAuthor); err == nil && len(e) > 0 {
-			editions = e
-			reason = "title_author"
+			editions, reason = e, "title_author"
 		}
 	}
 
 	if len(editions) == 0 {
-		return nil // no match found, leave candidate empty
+		return nil
 	}
 
 	e := editions[0]
-	year := ""
-	if e.ReleaseYear > 0 {
-		year = fmt.Sprintf("%d", e.ReleaseYear)
-	}
-
 	return s.db.SetMatchCandidate(ctx, book.ID, db.MatchCandidate{
 		EditionID:  e.ID,
 		BookID:     e.BookID,
 		Title:      e.DisplayTitle(),
 		Author:     e.AuthorName(),
 		Publisher:  e.PublisherName(),
-		Year:       year,
+		Year:       e.YearStr(),
 		ImageURL:   e.ImageURL(),
 		Reason:     reason,
 	})
 }
 
-// ConfirmMatch confirms a match (auto-detected or manually entered), adds the book
-// to the user's Hardcover library, creates/picks a reading session, and updates the DB.
+// ConfirmMatch confirms a match (auto-detected or manually entered), adds the
+// book to the user's Hardcover library, and creates/updates the reading session.
 func (s *Service) ConfirmMatch(ctx context.Context, bookID int64, editionID int64) error {
 	book, err := s.db.GetBook(ctx, bookID)
 	if err != nil {
@@ -137,7 +137,6 @@ func (s *Service) ConfirmMatch(ctx context.Context, bookID int64, editionID int6
 		return fmt.Errorf("get edition %d: %w", editionID, err)
 	}
 
-	// Determine initial HC status
 	statusID := hardcover.StatusCurrentlyReading
 	if book.ABSIsFinished {
 		statusID = hardcover.StatusRead
@@ -145,7 +144,7 @@ func (s *Service) ConfirmMatch(ctx context.Context, bookID int64, editionID int6
 		statusID = hardcover.StatusWantToRead
 	}
 
-	// Check if user already has this book in their HC library
+	// Reuse existing user_book if the user already has this book in their HC library.
 	existing, err := s.hc.GetUserBook(ctx, edition.BookID)
 	if err != nil {
 		return fmt.Errorf("check existing user book: %w", err)
@@ -160,50 +159,34 @@ func (s *Service) ConfirmMatch(ctx context.Context, bookID int64, editionID int6
 			userBookReadID = *existing.ReadID
 		}
 	} else {
-		// Add to Hardcover library
 		userBookID, err = s.hc.InsertUserBook(ctx, edition.BookID, editionID, statusID)
 		if err != nil {
 			return fmt.Errorf("insert user book: %w", err)
 		}
 	}
 
-	// Create or update reading session
+	// Create or update the reading session.
 	now := time.Now()
-	if userBookReadID == 0 && book.ABSCurrentSeconds > 0 {
-		var finishedAt *time.Time
-		if book.ABSIsFinished {
-			finishedAt = &now
-		}
-		_ = finishedAt // used below
-
-		var readErr error
-		userBookReadID, readErr = s.hc.InsertUserBookRead(ctx, userBookID, editionID, now, book.ABSCurrentSeconds)
-		if readErr != nil {
-			s.log.Warn("insert user book read failed", "err", readErr)
-		}
-		if book.ABSIsFinished {
-			_ = s.hc.UpdateUserBookRead(ctx, userBookReadID, book.ABSCurrentSeconds, &now)
-		}
-	} else if userBookReadID != 0 && book.ABSCurrentSeconds > 0 {
-		var finishedAt *time.Time
-		if book.ABSIsFinished {
-			finishedAt = &now
-		}
-		_ = s.hc.UpdateUserBookRead(ctx, userBookReadID, book.ABSCurrentSeconds, finishedAt)
+	var finishedAt *time.Time
+	if book.ABSIsFinished {
+		finishedAt = &now
 	}
 
-	// Update HC book status if we just added it
+	if book.ABSCurrentSeconds > 0 {
+		if userBookReadID == 0 {
+			readID, readErr := s.hc.InsertUserBookRead(ctx, userBookID, editionID, now, book.ABSCurrentSeconds, finishedAt)
+			if readErr != nil {
+				s.log.Warn("insert user book read failed — book added to HC but no reading session",
+					"book_id", bookID, "hc_user_book_id", userBookID, "err", readErr)
+			}
+			userBookReadID = readID
+		} else {
+			_ = s.hc.UpdateUserBookRead(ctx, userBookReadID, book.ABSCurrentSeconds, finishedAt)
+		}
+	}
+
 	if existing == nil {
 		_ = s.hc.UpdateUserBookStatus(ctx, userBookID, statusID)
-	}
-
-	year := ""
-	if edition.ReleaseYear > 0 {
-		year = fmt.Sprintf("%d", edition.ReleaseYear)
-	}
-	formatName := "Audiobook"
-	if edition.ReadingFormatID == hardcover.FormatEbook {
-		formatName = "Ebook"
 	}
 
 	return s.db.SetMatch(ctx, bookID, db.HCMatch{
@@ -213,8 +196,8 @@ func (s *Service) ConfirmMatch(ctx context.Context, bookID int64, editionID int6
 		UserBookReadID: userBookReadID,
 		EditionTitle:   edition.DisplayTitle(),
 		Publisher:      edition.PublisherName(),
-		Year:           year,
-		Format:         formatName,
+		Year:           edition.YearStr(),
+		Format:         edition.FormatName(),
 		ImageURL:       edition.ImageURL(),
 	})
 }
@@ -225,25 +208,28 @@ func (s *Service) SyncBookProgress(ctx context.Context, bookID int64) error {
 	if err != nil {
 		return fmt.Errorf("get book: %w", err)
 	}
-	if book.Status != "matched" {
+	if book.Status != db.StatusMatched {
 		return fmt.Errorf("book %d is not matched", bookID)
 	}
 	if book.HCUserBookID == nil {
 		return fmt.Errorf("book %d has no HC user_book_id", bookID)
 	}
 
-	// Ensure we have an active reading session
-	if book.HCUserBookReadID == nil || *book.HCUserBookReadID == 0 {
-		if book.HCEditionID != nil && book.ABSCurrentSeconds > 0 {
-			readID, err := s.hc.InsertUserBookRead(ctx, *book.HCUserBookID, *book.HCEditionID, time.Now(), book.ABSCurrentSeconds)
-			if err != nil {
-				return fmt.Errorf("create reading session: %w", err)
-			}
-			if err := s.db.SetHCUserBookReadID(ctx, bookID, readID); err != nil {
-				return err
-			}
-			book.HCUserBookReadID = &readID
+	// Create a reading session if one doesn't exist yet.
+	if (book.HCUserBookReadID == nil || *book.HCUserBookReadID == 0) && book.HCEditionID != nil && book.ABSCurrentSeconds > 0 {
+		now := time.Now()
+		var finishedAt *time.Time
+		if book.ABSIsFinished {
+			finishedAt = &now
 		}
+		readID, err := s.hc.InsertUserBookRead(ctx, *book.HCUserBookID, *book.HCEditionID, now, book.ABSCurrentSeconds, finishedAt)
+		if err != nil {
+			return fmt.Errorf("create reading session: %w", err)
+		}
+		if err := s.db.SetHCUserBookReadID(ctx, bookID, readID); err != nil {
+			return err
+		}
+		book.HCUserBookReadID = &readID
 	}
 
 	if book.HCUserBookReadID == nil || *book.HCUserBookReadID == 0 {
@@ -260,7 +246,6 @@ func (s *Service) SyncBookProgress(ctx context.Context, bookID int64) error {
 		return fmt.Errorf("update progress: %w", err)
 	}
 
-	// Update HC status
 	statusID := hardcover.StatusCurrentlyReading
 	if book.ABSIsFinished {
 		statusID = hardcover.StatusRead
@@ -281,8 +266,7 @@ func (s *Service) SyncAllProgress(ctx context.Context) (int, error) {
 	count := 0
 	for _, book := range cats.NeedsSync {
 		if book.PendingReread {
-			// skip — waiting for user confirmation on re-read
-			continue
+			continue // waiting for user confirmation
 		}
 		if err := s.SyncBookProgress(ctx, book.ID); err != nil {
 			s.log.Error("sync book progress", "book_id", book.ID, "title", book.ABSTitle, "err", err)
@@ -291,31 +275,6 @@ func (s *Service) SyncAllProgress(ctx context.Context) (int, error) {
 		count++
 	}
 	return count, nil
-}
-
-// CheckReread inspects all matched books for potential re-reads and sets the flag.
-func (s *Service) CheckReread(ctx context.Context) error {
-	books, err := s.db.ListAllBooks(ctx)
-	if err != nil {
-		return err
-	}
-
-	for _, b := range books {
-		if b.Status != "matched" || b.PendingReread {
-			continue
-		}
-		// If the book was previously synced at high progress and is now near the start
-		if b.LastSyncedSeconds > 0 {
-			lastPct := b.LastSyncedSeconds / max(b.ABSCurrentSeconds, b.LastSyncedSeconds)
-			currPct := b.ABSCurrentSeconds / max(b.ABSCurrentSeconds, b.LastSyncedSeconds)
-			if lastPct >= highProgressThreshold && currPct <= rereadThreshold {
-				if err := s.db.SetPendingReread(ctx, b.ID, true); err != nil {
-					s.log.Error("set pending reread", "book_id", b.ID, "err", err)
-				}
-			}
-		}
-	}
-	return nil
 }
 
 // ConfirmReread starts a new reading session in Hardcover for a re-read.
@@ -328,15 +287,13 @@ func (s *Service) ConfirmReread(ctx context.Context, bookID int64) error {
 		return fmt.Errorf("book %d not matched", bookID)
 	}
 
-	readID, err := s.hc.InsertUserBookRead(ctx, *book.HCUserBookID, *book.HCEditionID, time.Now(), book.ABSCurrentSeconds)
+	readID, err := s.hc.InsertUserBookRead(ctx, *book.HCUserBookID, *book.HCEditionID, time.Now(), book.ABSCurrentSeconds, nil)
 	if err != nil {
 		return fmt.Errorf("insert re-read session: %w", err)
 	}
-
 	if err := s.hc.UpdateUserBookStatus(ctx, *book.HCUserBookID, hardcover.StatusCurrentlyReading); err != nil {
 		return err
 	}
-
 	if err := s.db.SetHCUserBookReadID(ctx, bookID, readID); err != nil {
 		return err
 	}
@@ -355,7 +312,5 @@ func (s *Service) DismissReread(ctx context.Context, bookID int64) error {
 	if err := s.db.SetPendingReread(ctx, bookID, false); err != nil {
 		return err
 	}
-	// Treat current progress as "already synced" to avoid immediately re-triggering
 	return s.db.UpdateLastSynced(ctx, bookID, book.ABSCurrentSeconds, book.ABSIsFinished, time.Now())
 }
-

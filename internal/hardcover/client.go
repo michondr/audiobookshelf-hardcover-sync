@@ -409,20 +409,24 @@ func (c *Client) InsertUserBook(ctx context.Context, bookID, editionID int64, st
 	return data.InsertUserBook.ID, nil
 }
 
-func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID int64, startedAt time.Time, progressSeconds float64) (int64, error) {
+func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID int64, startedAt time.Time, progressSeconds float64, finishedAt *time.Time) (int64, error) {
 	var data struct {
 		InsertUserBookRead struct {
 			ID    int64   `json:"id"`
 			Error *string `json:"error"`
 		} `json:"insert_user_book_read"`
 	}
+	readInput := map[string]any{
+		"edition_id":       editionID,
+		"started_at":       startedAt.Format("2006-01-02"),
+		"progress_seconds": progressSeconds,
+	}
+	if finishedAt != nil {
+		readInput["finished_at"] = finishedAt.Format("2006-01-02")
+	}
 	if err := c.do(ctx, mutInsertUserBookRead, map[string]any{
-		"user_book_id": userBookID,
-		"user_book_read": map[string]any{
-			"edition_id":       editionID,
-			"started_at":       startedAt.Format("2006-01-02"),
-			"progress_seconds": progressSeconds,
-		},
+		"user_book_id":   userBookID,
+		"user_book_read": readInput,
 	}, &data); err != nil {
 		return 0, err
 	}

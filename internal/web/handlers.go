@@ -29,11 +29,6 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if err := h.sync.RefreshFromABS(ctx); err != nil {
-		h.log.Error("refresh from ABS", "err", err)
-		// continue — serve stale data rather than error page
-	}
-
 	cats, err := h.db.ListBooksByCategory(ctx)
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -58,6 +53,7 @@ func (h *handler) handleAbsCoverProxy(w http.ResponseWriter, r *http.Request) {
 
 	data, ct, err := h.abs.ProxyCover(r.Context(), itemID)
 	if err != nil {
+		h.log.Warn("cover proxy failed", "item_id", itemID, "err", err)
 		http.Error(w, "cover not available", http.StatusBadGateway)
 		return
 	}
@@ -68,10 +64,8 @@ func (h *handler) handleAbsCoverProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleAbsLink(w http.ResponseWriter, r *http.Request) {
-	// Redirect to ABS server for the given item — used in the UI link
 	itemID := strings.TrimPrefix(r.URL.Path, "/abs-link/")
-	absBase := h.abs.BaseURL()
-	http.Redirect(w, r, absBase+"/item/"+itemID, http.StatusFound)
+	http.Redirect(w, r, h.abs.BaseURL()+"/item/"+itemID, http.StatusFound)
 }
 
 func (h *handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
@@ -81,20 +75,16 @@ func (h *handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	// RefreshFromABS also runs checkReread internally.
 	if err := h.sync.RefreshFromABS(ctx); err != nil {
 		h.log.Error("refresh before sync", "err", err)
 	}
-	if err := h.sync.CheckReread(ctx); err != nil {
-		h.log.Error("check reread", "err", err)
-	}
-
 	if _, err := h.sync.SyncAllProgress(ctx); err != nil {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<div class="toast error">Sync error: %s</div>`, err.Error())
 		return
 	}
 
-	// Full page refresh so updated categories are visible
 	w.Header().Set("HX-Refresh", "true")
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -105,7 +95,7 @@ func (h *handler) handleBookIgnore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := h.db.SetStatus(r.Context(), book.ID, "ignored"); err != nil {
+	if err := h.db.SetStatus(r.Context(), book.ID, db.StatusIgnored); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
 	}
@@ -118,9 +108,9 @@ func (h *handler) handleBookUnignore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	status := "unmatched"
+	status := db.StatusUnmatched
 	if book.HCEditionID != nil {
-		status = "matched"
+		status = db.StatusMatched
 	}
 	if err := h.db.SetStatus(r.Context(), book.ID, status); err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
@@ -161,8 +151,7 @@ func (h *handler) handleManualMatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	editionIDStr := r.FormValue("edition_id")
-	editionID, err := strconv.ParseInt(strings.TrimSpace(editionIDStr), 10, 64)
+	editionID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("edition_id")), 10, 64)
 	if err != nil {
 		http.Error(w, "invalid edition_id", http.StatusBadRequest)
 		return
@@ -221,20 +210,15 @@ func (h *handler) handleDismissReread(w http.ResponseWriter, r *http.Request) {
 	h.renderBook(w, r, book.ID)
 }
 
-// ── helpers ──
+// ── helpers ────────────────────────────────────────────────────────────────
 
 func (h *handler) bookFromPath(r *http.Request, prefix, suffix string) (db.Book, error) {
-	path := strings.TrimPrefix(r.URL.Path, prefix)
-	idStr := strings.TrimSuffix(path, suffix)
+	idStr := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), suffix)
 	id, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
 		return db.Book{}, fmt.Errorf("invalid book id in path")
 	}
-	book, err := h.db.GetBook(r.Context(), id)
-	if err != nil {
-		return db.Book{}, fmt.Errorf("book not found: %w", err)
-	}
-	return book, nil
+	return h.db.GetBook(r.Context(), id)
 }
 
 func (h *handler) renderBook(w http.ResponseWriter, r *http.Request, bookID int64) {
