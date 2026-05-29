@@ -4,9 +4,9 @@ services:
     container_name: abs-sync
     restart: unless-stopped
     environment:
-      ABS_URL: ${ABS_URL}
-      ABS_TOKEN: ${ABS_TOKEN}
-      HARDCOVER_TOKEN: ${HARDCOVER_TOKEN}
+      ABS_URL: ${ABS_URL?:}
+      ABS_TOKEN: ${ABS_TOKEN?:}
+      HARDCOVER_TOKEN: ${HARDCOVER_TOKEN?:}
       CRON_SCHEDULE: ${CRON_SCHEDULE:-0 3 * * *}
       CRON_TIMEZONE: ${CRON_TIMEZONE:-Europe/Prague}
       DB_PATH: /data/app.db
