@@ -45,8 +45,9 @@ type itemsResponse struct {
 }
 
 type LibraryItem struct {
-	ID    string    `json:"id"`
-	Media mediaInfo `json:"media"`
+	ID      string    `json:"id"`
+	AddedAt int64     `json:"addedAt"` // milliseconds since epoch
+	Media   mediaInfo `json:"media"`
 }
 
 type mediaInfo struct {
@@ -84,6 +85,7 @@ type Book struct {
 	Author       string
 	ISBN         string
 	ASIN         string
+	AddedAt        time.Time
 	TotalSeconds   float64
 	CurrentSeconds float64
 	IsFinished     bool
@@ -194,6 +196,7 @@ func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 			ISBN:         item.Media.Metadata.ISBN,
 			ASIN:         item.Media.Metadata.ASIN,
 			TotalSeconds: item.Media.Duration,
+			AddedAt:      time.Unix(item.AddedAt/1000, 0),
 		}
 		if p, ok := progressMap[id]; ok {
 			b.CurrentSeconds = p.CurrentTime
@@ -203,8 +206,12 @@ func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 		books = append(books, b)
 	}
 
+	// Newest added in ABS first; fall back to title for ties.
 	sort.Slice(books, func(i, j int) bool {
-		return books[i].Title < books[j].Title
+		if books[i].AddedAt.Equal(books[j].AddedAt) {
+			return books[i].Title < books[j].Title
+		}
+		return books[i].AddedAt.After(books[j].AddedAt)
 	})
 	return books, nil
 }

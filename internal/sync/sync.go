@@ -37,7 +37,7 @@ func (s *Service) RefreshFromABS(ctx context.Context) error {
 	}
 
 	for _, b := range books {
-		if err := s.db.UpsertABSBook(ctx, b.ItemID, b.Title, b.Author, b.ISBN, b.ASIN, b.TotalSeconds); err != nil {
+		if err := s.db.UpsertABSBook(ctx, b.ItemID, b.Title, b.Author, b.ISBN, b.ASIN, b.AddedAt, b.TotalSeconds); err != nil {
 			s.log.Error("upsert book", "item_id", b.ItemID, "err", err)
 			continue
 		}

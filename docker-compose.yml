@@ -12,7 +12,7 @@ services:
       DB_PATH: /data/app.db
       PORT: 8080
     volumes:
-      - abs-sync-data:/data
+      - ./.data:/data
     networks:
       - proxy
     labels:
@@ -20,9 +20,6 @@ services:
       - "traefik.http.routers.abs-sync.rule=Host(`abs-sync.michondr.space`)"
       - "traefik.http.routers.abs-sync.entrypoints=websecure"
       - "traefik.http.routers.abs-sync.tls.certresolver=myvercelresolver"
-
-volumes:
-  abs-sync-data:
 
 networks:
   proxy:
