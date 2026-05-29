@@ -1,0 +1,29 @@
+services:
+  abs-sync:
+    build: .
+    container_name: abs-sync
+    restart: unless-stopped
+    environment:
+      ABS_URL: ${ABS_URL}
+      ABS_TOKEN: ${ABS_TOKEN}
+      HARDCOVER_TOKEN: ${HARDCOVER_TOKEN}
+      CRON_SCHEDULE: ${CRON_SCHEDULE:-0 3 * * *}
+      CRON_TIMEZONE: ${CRON_TIMEZONE:-Europe/Prague}
+      DB_PATH: /data/app.db
+      PORT: 8080
+    volumes:
+      - abs-sync-data:/data
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.abs-sync.rule=Host(`abs-sync.michondr.space`)"
+      - "traefik.http.routers.abs-sync.entrypoints=websecure"
+      - "traefik.http.routers.abs-sync.tls.certresolver=myvercelresolver"
+
+volumes:
+  abs-sync-data:
+
+networks:
+  proxy:
+    external: true

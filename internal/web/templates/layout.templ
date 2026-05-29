@@ -1,0 +1,43 @@
+package templates
+
+templ Layout(nextSync string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>ABS → Hardcover</title>
+			<link rel="stylesheet" href="/static/style.css"/>
+			<script src="https://unpkg.com/htmx.org@2.0.4" integrity="sha384-HGfztofotfshcF7+8n44JQL2oJmowVChPTg48S+jvZoztPfvwD79OC/LTtG6dMp+" crossorigin="anonymous"></script>
+		</head>
+		<body>
+			<header class="header">
+				<a href="/" class="header-title">ABS → Hardcover</a>
+				<div class="header-right">
+					<span class="header-meta">{ nextSync }</span>
+					<button
+						class="btn btn-primary btn-sm"
+						hx-post="/sync"
+						hx-target="#sync-toast"
+						hx-swap="innerHTML"
+						hx-indicator="#sync-spinner"
+					>▶ Sync Now</button>
+					<span id="sync-spinner" class="htmx-indicator">syncing…</span>
+				</div>
+			</header>
+			<div id="sync-toast"></div>
+			<main class="content">
+				{ children... }
+			</main>
+			<script>
+				function toggleCategory(btn) {
+					const id = btn.dataset.target;
+					const el = document.getElementById(id);
+					if (!el) return;
+					el.classList.toggle('collapsed');
+					btn.textContent = el.classList.contains('collapsed') ? 'expand' : 'collapse';
+				}
+			</script>
+		</body>
+	</html>
+}

@@ -1,0 +1,42 @@
+package templates
+
+import (
+	"fmt"
+	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
+)
+
+templ Index(cats db.BooksByCategory, nextSync string) {
+	@Layout(nextSync) {
+		@categorySection("UNMATCHED", "unmatched", cats.Unmatched, false, "unmatched")
+		@categorySection("NEEDS SYNC", "needs-sync", cats.NeedsSync, false, "needs-sync")
+		@categorySection("SYNCED", "synced", cats.Synced, true, "")
+		@categorySection("IGNORED", "ignored", cats.Ignored, true, "")
+	}
+}
+
+templ categorySection(title, id string, books []db.Book, defaultCollapsed bool, badgeClass string) {
+	<section class="category">
+		<div class="category-header">
+			<span class="category-label">{ title }</span>
+			<span class={ "category-badge " + badgeClass }>{ fmt.Sprintf("%d", len(books)) }</span>
+			<button class="toggle-btn" onclick="toggleCategory(this)" data-target={ id + "-books" }>
+				if defaultCollapsed {
+					expand
+				} else {
+					collapse
+				}
+			</button>
+		</div>
+		<div
+			id={ id + "-books" }
+			class={ "category-books", templ.KV("collapsed", defaultCollapsed) }
+		>
+			if len(books) == 0 {
+				<p class="empty-state">No books here.</p>
+			}
+			for _, book := range books {
+				@BookCard(book)
+			}
+		</div>
+	</section>
+}
