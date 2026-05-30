@@ -7,247 +7,185 @@ import (
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
 )
 
-// BookCard renders a complete book card. Used both for full page render and HTMX partial swaps.
 templ BookCard(book db.Book) {
-	<div
-		class={ "book-card", templ.KV("ignored-card", book.Status == "ignored") }
-		id={ fmt.Sprintf("book-%d", book.ID) }
-	>
-		<div class="book-row">
-			@absSide(book)
-			@hcSide(book)
-		</div>
-		if book.PendingReread {
-			@rereadBanner(book)
-		}
-		if book.Status == "matched" && !book.PendingReread {
-			@matchedActions(book)
-		}
-		if book.Status == "ignored" {
-			@ignoredActions(book)
-		}
-	</div>
-}
-
-templ absSide(book db.Book) {
-	<div class="book-side left">
-		<img
-			class="cover"
-			src={ fmt.Sprintf("/proxy/abs-cover/%s", book.ABSItemID) }
-			alt={ book.ABSTitle }
-			loading="lazy"
-			onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
-		/>
-		<div class="cover-placeholder" style="display:none">📚</div>
-		<div class="book-info">
-			<div class="side-tag">AudioBookshelf</div>
-			<div class="book-title" title={ book.ABSTitle }>{ book.ABSTitle }</div>
-			<div class="book-author">{ book.ABSAuthor }</div>
-			if book.ABSCurrentSeconds > 0 || book.ABSIsFinished {
-				<div class="progress-wrap">
-					<div class="progress-bar">
-						<div
-							class={ templ.KV("progress-fill", true), templ.KV("finished", book.ABSIsFinished) }
-							style={ absProgressStyle(book) }
-						></div>
+	<div class={ "book-card", templ.KV("book-ignored", book.HCIgnored) } id={ fmt.Sprintf("book-%d", book.ID) }>
+		<div class="book-inner">
+			<img
+				class="cover"
+				src={ fmt.Sprintf("/proxy/abs-cover/%s", book.ABSItemID) }
+				alt={ book.ABSTitle }
+				loading="lazy"
+				onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
+			/>
+			<div class="cover-placeholder" style="display:none">📚</div>
+			<div class="book-info">
+				<div class="book-title" title={ book.ABSTitle }>{ book.ABSTitle }</div>
+				<div class="book-author">{ book.ABSAuthor }</div>
+				if book.ABSCurrentSeconds > 0 || book.ABSIsFinished {
+					<div class="progress-wrap">
+						<div class="progress-bar">
+							<div
+								class={ templ.KV("progress-fill", true), templ.KV("finished", book.ABSIsFinished) }
+								style={ absProgressStyle(book) }
+							></div>
+						</div>
+						<span class="progress-text">{ absProgressLabel(book) }</span>
 					</div>
-					<span class="progress-text">{ absProgressLabel(book) }</span>
-				</div>
-			}
-			<a
-				class="ext-link"
-				href={ templ.SafeURL(fmt.Sprintf("/abs-link/%s", book.ABSItemID)) }
-				target="_blank"
-				rel="noopener"
-			>Open in ABS</a>
-		</div>
-	</div>
-}
-
-templ hcSide(book db.Book) {
-	<div class="book-side">
-		switch book.Status {
-		case "unmatched":
-			@unmatchedPanel(book)
-		case "matched":
-			@matchedPanel(book)
-		case "ignored":
-			@matchedOrIgnoredPanel(book)
-		}
-	</div>
-}
-
-templ unmatchedPanel(book db.Book) {
-	<div class="unmatched-panel" style="width:100%">
-		<div class="side-tag">Hardcover</div>
-		if book.CandidateEditionID != nil {
-			<p class="no-match-label">Auto-matched by <strong>{ book.CandidateReason }</strong>:</p>
-			<div class="candidate">
-				if book.CandidateImageURL != "" {
-					<img class="candidate-cover" src={ book.CandidateImageURL } alt={ book.CandidateTitle } loading="lazy"/>
-				} else {
-					<div class="candidate-cover-placeholder">📖</div>
 				}
-				<div class="candidate-info">
-					<div class="candidate-title">
-						{ book.CandidateTitle }
-						<span class={ "match-tag " + book.CandidateReason }>{ book.CandidateReason }</span>
+				if book.ABSStartedAt != nil {
+					<div class="dates-row">
+						<span>{ formatDate(book.ABSStartedAt) }</span>
+						if book.ABSFinishedAt != nil {
+							<span> → { formatDate(book.ABSFinishedAt) }</span>
+						}
 					</div>
-					<div class="candidate-meta">{ book.CandidateAuthor }</div>
-					if book.CandidatePublisher != "" || book.CandidateYear != "" {
-						<div class="candidate-meta">{ book.CandidatePublisher }{ separatorIf(book.CandidatePublisher != "" && book.CandidateYear != "") }{ book.CandidateYear }</div>
-					}
-					<div class="btn-row">
-						<button
-							class="btn btn-success btn-sm"
-							hx-post={ fmt.Sprintf("/books/%d/confirm-match", book.ID) }
-							hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-							hx-swap="outerHTML"
-							hx-vals={ fmt.Sprintf(`{"edition_id":"%d"}`, *book.CandidateEditionID) }
-						>✓ Confirm</button>
-						<button
-							class="btn btn-danger btn-sm"
-							hx-post={ fmt.Sprintf("/books/%d/ignore", book.ID) }
-							hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-							hx-swap="outerHTML"
-						>✗ Ignore</button>
-					</div>
-				</div>
-			</div>
-		} else {
-			<p class="no-match-label">No match found automatically.</p>
-		}
-		<div class="manual-section">
-			<div class="manual-label">
+				}
 				<a
 					class="ext-link"
-					href={ templ.SafeURL(fmt.Sprintf("https://hardcover.app/search?q=%s", urlEncode(book.ABSTitle+" "+book.ABSAuthor))) }
+					href={ templ.SafeURL(fmt.Sprintf("/abs-link/%s", book.ABSItemID)) }
 					target="_blank"
 					rel="noopener"
-				>Search editions on Hardcover</a>
+				>Open in ABS</a>
 			</div>
-			<form
-				hx-post={ fmt.Sprintf("/books/%d/manual-match", book.ID) }
+		</div>
+		@hcSection(book)
+	</div>
+}
+
+templ hcSection(book db.Book) {
+	if book.HCIgnored {
+		<div class="hc-section hc-ignored">
+			<span class="hc-badge hc-badge-ignored">Ignored</span>
+			<button
+				class="btn btn-sm btn-ghost"
+				hx-post={ fmt.Sprintf("/book/%d/unignore", book.ID) }
 				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
 				hx-swap="outerHTML"
-			>
-				<div class="manual-row">
-					<input class="id-input" type="text" name="edition_id" placeholder="Paste edition ID…" required/>
-					<button class="btn btn-primary btn-sm" type="submit">Use this</button>
-				</div>
-			</form>
+			>Unignore</button>
 		</div>
-	</div>
-}
-
-templ matchedPanel(book db.Book) {
-	<div class="matched-panel" style="width:100%">
-		<div class="side-tag">Hardcover</div>
-		if book.HCEditionImageURL != "" {
-			<img class="cover" src={ book.HCEditionImageURL } alt={ book.HCEditionTitle } loading="lazy" style="float:right;margin-left:0.9rem"/>
-		}
-		<div class="book-title" title={ book.HCEditionTitle }>{ book.HCEditionTitle }</div>
-		<div class="hc-meta">
-			if book.HCEditionFormat != "" {
-				{ book.HCEditionFormat }
-				if book.HCEditionPublisher != "" || book.HCEditionYear != "" {
-					{ " · " }
-				}
-			}
-			{ book.HCEditionPublisher }
-			if book.HCEditionPublisher != "" && book.HCEditionYear != "" {
-				{ " · " }
-			}
-			{ book.HCEditionYear }
-		</div>
-		if book.HCEditionID != nil {
-			<a
-				class="ext-link"
-				href={ templ.SafeURL(fmt.Sprintf("https://hardcover.app/editions/%d", *book.HCEditionID)) }
-				target="_blank"
-				rel="noopener"
-			>Open in Hardcover</a>
-		}
-		if book.NeedsSync() {
-			<div class="synced-label">
-				<span class="badge badge-needs">⬆ needs sync</span>
-				{ " · " }ABS: { formatSeconds(book.ABSCurrentSeconds) }
-				{ " · " }Last synced: { formatSeconds(book.LastSyncedSeconds) } ({ formatRelTime(book.LastSyncedAt) })
-			</div>
-		} else {
-			<div class="synced-label">
-				if book.ABSIsFinished {
-					<span class="badge badge-finished">✓ finished</span>
-				} else {
-					<span class="badge badge-synced">✓ synced</span>
-				}
-				{ " · " }{ formatRelTime(book.LastSyncedAt) }
-			</div>
-		}
-	</div>
-}
-
-// matchedOrIgnoredPanel shows HC info for ignored books (read-only).
-templ matchedOrIgnoredPanel(book db.Book) {
-	if book.HCEditionID != nil {
-		@matchedPanel(book)
+	} else if book.HCEditionID != nil {
+		@hcMatched(book)
+	} else if len(book.ParsedCandidates()) > 0 {
+		@hcCandidates(book)
+	} else if book.HCMatchSearchedAt != nil {
+		@hcNoMatch(book)
 	} else {
-		<div class="book-side" style="width:100%">
-			<div class="side-tag">Hardcover</div>
-			<span class="badge badge-ignored">ignored</span>
+		<div class="hc-section hc-pending">
+			<span class="hc-badge hc-badge-pending">Pending — sync to match</span>
 		</div>
 	}
 }
 
-templ matchedActions(book db.Book) {
-	<div class="book-actions">
-		if book.NeedsSync() {
-			<button
-				class="btn btn-primary btn-sm"
-				hx-post={ fmt.Sprintf("/books/%d/sync-progress", book.ID) }
-				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-				hx-swap="outerHTML"
-			>↑ Sync Progress</button>
+templ hcMatched(book db.Book) {
+	<div class="hc-section hc-matched">
+		<span class="hc-badge hc-badge-matched">✓ Matched</span>
+		if e := book.ParsedEdition(); e != nil {
+			<div class="candidate hc-match-detail">
+				if e.ImageURL != "" {
+					<img class="candidate-cover" src={ e.ImageURL } alt={ e.Title } loading="lazy" onerror="this.style.display='none'"/>
+				} else {
+					<div class="candidate-cover-placeholder">📚</div>
+				}
+				<div class="candidate-info">
+					<span class="candidate-title">{ e.Title }</span>
+					if e.Author != "" {
+						<span class="candidate-meta">{ e.Author }</span>
+					}
+					<span class="candidate-meta">{ candidateMeta(*e) }</span>
+				</div>
+			</div>
+		} else if info := hcEditionInfo(book); info != "" {
+			<span class="hc-edition-info">{ info }</span>
 		}
 		<button
-			class="btn btn-ghost btn-sm"
-			hx-post={ fmt.Sprintf("/books/%d/ignore", book.ID) }
+			class="btn btn-sm btn-ghost"
+			hx-post={ fmt.Sprintf("/book/%d/unmatch", book.ID) }
+			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+			hx-swap="outerHTML"
+		>Unmatch</button>
+	</div>
+}
+
+templ hcCandidates(book db.Book) {
+	<div class="hc-section hc-candidates">
+		<div class="hc-candidates-header">
+			{ fmt.Sprintf("%d editions found — pick one:", len(book.ParsedCandidates())) }
+		</div>
+		<div class="candidate-list">
+			for _, c := range book.ParsedCandidates() {
+				@candidateRow(book.ID, c)
+			}
+		</div>
+		<div class="hc-manual">
+			<span class="hc-manual-label">Or enter an edition ID manually:</span>
+			<form
+				class="hc-manual-form"
+				hx-post={ fmt.Sprintf("/book/%d/set-edition", book.ID) }
+				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+				hx-swap="outerHTML"
+			>
+				<input class="input-sm" type="number" name="edition_id" placeholder="Edition ID" min="1" required/>
+				<button class="btn btn-sm btn-secondary" type="submit">Use</button>
+			</form>
+			<button
+				class="btn btn-sm btn-ghost"
+				hx-post={ fmt.Sprintf("/book/%d/ignore", book.ID) }
+				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+				hx-swap="outerHTML"
+			>Ignore</button>
+		</div>
+	</div>
+}
+
+templ candidateRow(bookID int64, c db.CandidateEdition) {
+	<div class="candidate">
+		if c.ImageURL != "" {
+			<img class="candidate-cover" src={ c.ImageURL } alt={ c.Title } loading="lazy" onerror="this.style.display='none'"/>
+		} else {
+			<div class="candidate-cover-placeholder">📚</div>
+		}
+		<div class="candidate-info">
+			<span class="candidate-title">{ c.Title }</span>
+			if c.Author != "" {
+				<span class="candidate-meta">{ c.Author }</span>
+			}
+			<span class="candidate-meta">{ candidateMeta(c) }</span>
+		</div>
+		<form
+			hx-post={ fmt.Sprintf("/book/%d/set-edition", bookID) }
+			hx-target={ fmt.Sprintf("#book-%d", bookID) }
+			hx-swap="outerHTML"
+		>
+			<input type="hidden" name="edition_id" value={ fmt.Sprintf("%d", c.ID) }/>
+			<button class="btn btn-sm btn-primary" type="submit">Pick</button>
+		</form>
+	</div>
+}
+
+templ hcNoMatch(book db.Book) {
+	<div class="hc-section hc-no-match">
+		<span class="hc-badge hc-badge-no-match">Not found</span>
+		<a
+			class="ext-link hc-search-link"
+			href={ templ.SafeURL(hcSearchURL(book.ABSTitle, book.ABSAuthor)) }
+			target="_blank"
+			rel="noopener"
+		>Search on Hardcover</a>
+		<form
+			class="hc-manual-form"
+			hx-post={ fmt.Sprintf("/book/%d/set-edition", book.ID) }
+			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+			hx-swap="outerHTML"
+		>
+			<input class="input-sm" type="number" name="edition_id" placeholder="Edition ID" min="1" required/>
+			<button class="btn btn-sm btn-secondary" type="submit">Set Edition</button>
+		</form>
+		<button
+			class="btn btn-sm btn-ghost"
+			hx-post={ fmt.Sprintf("/book/%d/ignore", book.ID) }
 			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
 			hx-swap="outerHTML"
 		>Ignore</button>
-	</div>
-}
-
-templ ignoredActions(book db.Book) {
-	<div class="book-actions">
-		<span class="badge badge-ignored">ignored</span>
-		<button
-			class="btn btn-ghost btn-sm"
-			hx-post={ fmt.Sprintf("/books/%d/unignore", book.ID) }
-			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-			hx-swap="outerHTML"
-		>Restore</button>
-	</div>
-}
-
-templ rereadBanner(book db.Book) {
-	<div class="reread-banner">
-		<span class="reread-icon">↺</span>
-		<span class="reread-text">
-			<strong>Looks like a re-read</strong> — progress reset from { formatSeconds(book.LastSyncedSeconds) } back to { formatSeconds(book.ABSCurrentSeconds) }. Mark as a new read in Hardcover?
-		</span>
-		<button
-			class="btn btn-primary btn-sm"
-			hx-post={ fmt.Sprintf("/books/%d/confirm-reread", book.ID) }
-			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-			hx-swap="outerHTML"
-		>Yes, mark re-read</button>
-		<button
-			class="btn btn-ghost btn-sm"
-			hx-post={ fmt.Sprintf("/books/%d/dismiss-reread", book.ID) }
-			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-			hx-swap="outerHTML"
-		>No</button>
 	</div>
 }
 
@@ -257,47 +195,23 @@ func absProgressStyle(book db.Book) string {
 	if book.ABSIsFinished {
 		return "width:100%"
 	}
-	// Approximate: use ratio of current to the max known value
-	ref := math.Max(book.ABSCurrentSeconds, book.LastSyncedSeconds)
-	if ref <= 0 {
+	if book.ABSTotalSeconds > 0 {
+		pct := math.Min(book.ABSCurrentSeconds/book.ABSTotalSeconds*100, 100)
+		return fmt.Sprintf("width:%.1f%%", pct)
+	}
+	if book.ABSCurrentSeconds <= 0 {
 		return "width:0%"
 	}
-	pct := math.Min(book.ABSCurrentSeconds/ref*100, 100)
-	return fmt.Sprintf("width:%.1f%%", pct)
+	return "width:100%"
 }
 
 func absProgressLabel(book db.Book) string {
 	if book.ABSIsFinished {
 		return "Finished · " + formatSeconds(book.ABSCurrentSeconds)
 	}
+	if book.ABSTotalSeconds > 0 {
+		pct := book.ABSCurrentSeconds / book.ABSTotalSeconds * 100
+		return fmt.Sprintf("%.0f%% · %s", pct, formatSeconds(book.ABSCurrentSeconds))
+	}
 	return formatSeconds(book.ABSCurrentSeconds)
-}
-
-func separatorIf(cond bool) string {
-	if cond {
-		return " · "
-	}
-	return ""
-}
-
-func urlEncode(s string) string {
-	var out []byte
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' {
-			out = append(out, c)
-		} else if c == ' ' {
-			out = append(out, '+')
-		} else {
-			out = append(out, '%', hexChar(c>>4), hexChar(c&0xf))
-		}
-	}
-	return string(out)
-}
-
-func hexChar(b byte) byte {
-	if b < 10 {
-		return '0' + b
-	}
-	return 'a' + b - 10
 }

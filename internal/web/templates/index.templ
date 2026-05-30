@@ -2,41 +2,57 @@ package templates
 
 import (
 	"fmt"
+
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
 )
 
-templ Index(cats db.BooksByCategory, nextSync string) {
+templ Index(books []db.Book, nextSync string) {
 	@Layout(nextSync) {
-		@categorySection("UNMATCHED", "unmatched", cats.Unmatched, false, "unmatched")
-		@categorySection("NEEDS SYNC", "needs-sync", cats.NeedsSync, false, "needs-sync")
-		@categorySection("SYNCED", "synced", cats.Synced, true, "")
-		@categorySection("IGNORED", "ignored", cats.Ignored, true, "")
+		if len(books) == 0 {
+			<p class="empty-state">No books yet — hit Sync Now to load your library.</p>
+		} else {
+			@bookSections(groupBooks(books))
+		}
 	}
 }
 
-templ categorySection(title, id string, books []db.Book, defaultCollapsed bool, badgeClass string) {
-	<section class="category">
-		<div class="category-header">
-			<span class="category-label">{ title }</span>
-			<span class={ "category-badge " + badgeClass }>{ fmt.Sprintf("%d", len(books)) }</span>
-			<button class="toggle-btn" onclick="toggleCategory(this)" data-target={ id + "-books" }>
-				if defaultCollapsed {
-					expand
-				} else {
-					collapse
-				}
-			</button>
-		</div>
-		<div
-			id={ id + "-books" }
-			class={ "category-books", templ.KV("collapsed", defaultCollapsed) }
-		>
-			if len(books) == 0 {
-				<p class="empty-state">No books here.</p>
-			}
-			for _, book := range books {
-				@BookCard(book)
-			}
-		</div>
-	</section>
+templ bookSections(g BookGroups) {
+	if len(g.NeedsAction) > 0 {
+		@bookSection("Needs your input", "warning", false, g.NeedsAction)
+	}
+	if len(g.Matched) > 0 {
+		@bookSection("Matched", "success", false, g.Matched)
+	}
+	if len(g.Pending) > 0 {
+		@bookSection("Pending match", "info", false, g.Pending)
+	}
+	if len(g.Ignored) > 0 {
+		@bookSection("Ignored", "muted", true, g.Ignored)
+	}
+}
+
+templ bookSection(title, variant string, collapsed bool, books []db.Book) {
+	if !collapsed {
+		<details open class="book-section">
+			@bookSectionInner(title, variant, books)
+		</details>
+	} else {
+		<details class="book-section">
+			@bookSectionInner(title, variant, books)
+		</details>
+	}
+}
+
+templ bookSectionInner(title, variant string, books []db.Book) {
+	<summary class="section-header">
+		<span class="section-chevron">▶</span>
+		<span class={ "section-dot", "section-dot-" + variant }></span>
+		<span class="section-title">{ title }</span>
+		<span class="section-count">{ fmt.Sprintf("%d", len(books)) }</span>
+	</summary>
+	<div class="section-body">
+		for _, book := range books {
+			@BookCard(book)
+		}
+	</div>
 }

@@ -29,15 +29,6 @@ templ Layout(nextSync string) {
 			<main class="content">
 				{ children... }
 			</main>
-			<script>
-				function toggleCategory(btn) {
-					const id = btn.dataset.target;
-					const el = document.getElementById(id);
-					if (!el) return;
-					el.classList.toggle('collapsed');
-					btn.textContent = el.classList.contains('collapsed') ? 'expand' : 'collapse';
-				}
-			</script>
 		</body>
 	</html>
 }

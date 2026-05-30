@@ -10,6 +10,7 @@ import (
 
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/abs"
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
+	"github.com/michondr/audiobookshelf-hardcover-sync/internal/hardcover"
 	syncsvc "github.com/michondr/audiobookshelf-hardcover-sync/internal/sync"
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/web/templates"
 )
@@ -17,6 +18,7 @@ import (
 type handler struct {
 	db       *db.DB
 	abs      *abs.Client
+	hc       *hardcover.Client
 	sync     *syncsvc.Service
 	log      *slog.Logger
 	nextSync func() time.Time
@@ -28,8 +30,7 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	cats, err := h.db.ListBooksByCategory(ctx)
+	books, err := h.db.ListAllBooks(r.Context())
 	if err != nil {
 		http.Error(w, "db error", http.StatusInternalServerError)
 		return
@@ -41,7 +42,7 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.Index(cats, nextSync).Render(ctx, w)
+	_ = templates.Index(books, nextSync).Render(r.Context(), w)
 }
 
 func (h *handler) handleAbsCoverProxy(w http.ResponseWriter, r *http.Request) {
@@ -69,162 +70,115 @@ func (h *handler) handleAbsLink(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	ctx := r.Context()
-	// RefreshFromABS also runs checkReread internally.
-	if err := h.sync.RefreshFromABS(ctx); err != nil {
-		h.log.Error("refresh before sync", "err", err)
-	}
-	if _, err := h.sync.SyncAllProgress(ctx); err != nil {
+	if err := h.sync.RefreshFromABS(r.Context()); err != nil {
+		h.log.Error("refresh from ABS", "err", err)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, `<div class="toast error">Sync error: %s</div>`, err.Error())
 		return
+	}
+
+	if err := h.sync.MatchUnmatched(r.Context()); err != nil {
+		h.log.Error("match unmatched", "err", err)
 	}
 
 	w.Header().Set("HX-Refresh", "true")
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *handler) handleBookIgnore(w http.ResponseWriter, r *http.Request) {
-	book, err := h.bookFromPath(r, "/books/", "/ignore")
+func (h *handler) handleSetEdition(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := h.db.SetStatus(r.Context(), book.ID, db.StatusIgnored); err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	h.renderBook(w, r, book.ID)
-}
-
-func (h *handler) handleBookUnignore(w http.ResponseWriter, r *http.Request) {
-	book, err := h.bookFromPath(r, "/books/", "/unignore")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	status := db.StatusUnmatched
-	if book.HCEditionID != nil {
-		status = db.StatusMatched
-	}
-	if err := h.db.SetStatus(r.Context(), book.ID, status); err != nil {
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
-	h.renderBook(w, r, book.ID)
-}
-
-func (h *handler) handleConfirmMatch(w http.ResponseWriter, r *http.Request) {
-	book, err := h.bookFromPath(r, "/books/", "/confirm-match")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	editionIDStr := r.FormValue("edition_id")
-	if editionIDStr == "" && book.CandidateEditionID != nil {
-		editionIDStr = strconv.FormatInt(*book.CandidateEditionID, 10)
-	}
-	editionID, err := strconv.ParseInt(editionIDStr, 10, 64)
-	if err != nil {
-		http.Error(w, "invalid edition_id", http.StatusBadRequest)
-		return
-	}
-
-	if err := h.sync.ConfirmMatch(r.Context(), book.ID, editionID); err != nil {
-		h.log.Error("confirm match", "book_id", book.ID, "edition_id", editionID, "err", err)
-		http.Error(w, "match failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	h.renderBook(w, r, book.ID)
-}
-
-func (h *handler) handleManualMatch(w http.ResponseWriter, r *http.Request) {
-	book, err := h.bookFromPath(r, "/books/", "/manual-match")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "invalid id", http.StatusBadRequest)
 		return
 	}
 
 	editionID, err := strconv.ParseInt(strings.TrimSpace(r.FormValue("edition_id")), 10, 64)
-	if err != nil {
+	if err != nil || editionID <= 0 {
 		http.Error(w, "invalid edition_id", http.StatusBadRequest)
 		return
 	}
 
-	if err := h.sync.ConfirmMatch(r.Context(), book.ID, editionID); err != nil {
-		h.log.Error("manual match", "book_id", book.ID, "edition_id", editionID, "err", err)
-		http.Error(w, "match failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	h.renderBook(w, r, book.ID)
-}
-
-func (h *handler) handleSyncProgress(w http.ResponseWriter, r *http.Request) {
-	book, err := h.bookFromPath(r, "/books/", "/sync-progress")
+	edition, err := h.hc.GetEdition(r.Context(), editionID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		h.log.Warn("get edition from HC", "edition_id", editionID, "err", err)
+		http.Error(w, "edition not found on Hardcover", http.StatusBadGateway)
 		return
 	}
 
-	if err := h.sync.SyncBookProgress(r.Context(), book.ID); err != nil {
-		h.log.Error("sync progress", "book_id", book.ID, "err", err)
-		http.Error(w, "sync failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	h.renderBook(w, r, book.ID)
-}
-
-func (h *handler) handleConfirmReread(w http.ResponseWriter, r *http.Request) {
-	book, err := h.bookFromPath(r, "/books/", "/confirm-reread")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	candidate := db.CandidateEdition{
+		ID:        edition.ID,
+		BookID:    edition.BookID,
+		Title:     edition.DisplayTitle(),
+		Author:    edition.AuthorName(),
+		Publisher: edition.PublisherName(),
+		Year:      edition.ReleaseYear,
+		FormatID:  edition.ReadingFormatID,
+		ImageURL:  edition.ImageURL(),
+		ISBN13:    edition.ISBN13,
+		ASIN:      edition.ASIN,
 	}
 
-	if err := h.sync.ConfirmReread(r.Context(), book.ID); err != nil {
-		h.log.Error("confirm reread", "book_id", book.ID, "err", err)
-		http.Error(w, "reread failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	h.renderBook(w, r, book.ID)
-}
-
-func (h *handler) handleDismissReread(w http.ResponseWriter, r *http.Request) {
-	book, err := h.bookFromPath(r, "/books/", "/dismiss-reread")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if err := h.sync.DismissReread(r.Context(), book.ID); err != nil {
-		h.log.Error("dismiss reread", "book_id", book.ID, "err", err)
-		http.Error(w, "dismiss failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	h.renderBook(w, r, book.ID)
-}
-
-// ── helpers ────────────────────────────────────────────────────────────────
-
-func (h *handler) bookFromPath(r *http.Request, prefix, suffix string) (db.Book, error) {
-	idStr := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), suffix)
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	if err != nil {
-		return db.Book{}, fmt.Errorf("invalid book id in path")
-	}
-	return h.db.GetBook(r.Context(), id)
-}
-
-func (h *handler) renderBook(w http.ResponseWriter, r *http.Request, bookID int64) {
-	book, err := h.db.GetBook(r.Context(), bookID)
-	if err != nil {
+	if err := h.db.SetHCEdition(r.Context(), id, candidate); err != nil {
+		h.log.Error("set edition in db", "id", id, "err", err)
 		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+
+	h.renderBookCard(w, r, id)
+}
+
+func (h *handler) handleIgnoreBook(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.SetHCIgnored(r.Context(), id, true); err != nil {
+		h.log.Error("ignore book", "id", id, "err", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+
+	h.renderBookCard(w, r, id)
+}
+
+func (h *handler) handleUnmatchBook(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.UnmatchBook(r.Context(), id); err != nil {
+		h.log.Error("unmatch book", "id", id, "err", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+
+	h.renderBookCard(w, r, id)
+}
+
+func (h *handler) handleUnignoreBook(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.UnignoreBook(r.Context(), id); err != nil {
+		h.log.Error("unignore book", "id", id, "err", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+
+	h.renderBookCard(w, r, id)
+}
+
+func (h *handler) renderBookCard(w http.ResponseWriter, r *http.Request, id int64) {
+	book, err := h.db.GetBook(r.Context(), id)
+	if err != nil {
+		http.Error(w, "book not found", http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

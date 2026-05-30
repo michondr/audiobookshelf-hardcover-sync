@@ -6,13 +6,13 @@ import (
 )
 
 type Config struct {
-	ABSUrl         string
-	ABSToken       string
-	HardcoverToken string
-	CronSchedule   string
-	CronTimezone   string
-	DBPath         string
-	Port           string
+	ABSUrl          string
+	ABSToken        string
+	HardcoverToken  string
+	CronSchedule    string
+	CronTimezone    string
+	DBPath          string
+	Port            string
 }
 
 func Load() (*Config, error) {

@@ -62,20 +62,24 @@ type bookMetadata struct {
 	ASIN       string `json:"asin"`
 }
 
-type inProgressResponse struct {
-	LibraryItems []inProgressItem `json:"libraryItems"`
-}
-
-type inProgressItem struct {
-	ID            string         `json:"id"`
-	MediaProgress *MediaProgress `json:"mediaProgress"`
-}
-
 type MediaProgress struct {
-	IsFinished  bool    `json:"isFinished"`
-	Progress    float64 `json:"progress"`
-	CurrentTime float64 `json:"currentTime"`
-	LastUpdate  int64   `json:"lastUpdate"` // milliseconds
+	IsFinished  bool       `json:"isFinished"`
+	Progress    float64    `json:"progress"`
+	CurrentTime float64    `json:"currentTime"`
+	LastUpdate  int64      `json:"lastUpdate"` // milliseconds
+	StartedAt   *time.Time
+	FinishedAt  *time.Time
+}
+
+type meResponse struct {
+	MediaProgress []struct {
+		LibraryItemID string   `json:"libraryItemId"`
+		IsFinished    bool     `json:"isFinished"`
+		CurrentTime   float64  `json:"currentTime"`
+		LastUpdate    int64    `json:"lastUpdate"`
+		StartedAt     *int64   `json:"startedAt"`  // milliseconds, nullable
+		FinishedAt    *int64   `json:"finishedAt"` // milliseconds, nullable
+	} `json:"mediaProgress"`
 }
 
 // Book is the merged view of a library item + its progress.
@@ -90,6 +94,8 @@ type Book struct {
 	CurrentSeconds float64
 	IsFinished     bool
 	LastUpdate     time.Time
+	StartedAt      *time.Time
+	FinishedAt     *time.Time
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -149,12 +155,31 @@ func (c *Client) GetLibraryItems(ctx context.Context, libraryID string) ([]Libra
 	return all, nil
 }
 
-func (c *Client) GetItemsInProgress(ctx context.Context) ([]inProgressItem, error) {
-	var r inProgressResponse
-	if err := c.get(ctx, "/api/me/items-in-progress", &r); err != nil {
+// getAllProgress returns a map of libraryItemID → MediaProgress for every item
+// the user has interacted with, including finished books.
+func (c *Client) getAllProgress(ctx context.Context) (map[string]*MediaProgress, error) {
+	var r meResponse
+	if err := c.get(ctx, "/api/me", &r); err != nil {
 		return nil, err
 	}
-	return r.LibraryItems, nil
+	m := make(map[string]*MediaProgress, len(r.MediaProgress))
+	for _, p := range r.MediaProgress {
+		mp := &MediaProgress{
+			IsFinished:  p.IsFinished,
+			CurrentTime: p.CurrentTime,
+			LastUpdate:  p.LastUpdate,
+		}
+		if p.StartedAt != nil {
+			t := time.Unix(*p.StartedAt/1000, 0)
+			mp.StartedAt = &t
+		}
+		if p.FinishedAt != nil {
+			t := time.Unix(*p.FinishedAt/1000, 0)
+			mp.FinishedAt = &t
+		}
+		m[p.LibraryItemID] = mp
+	}
+	return m, nil
 }
 
 // GetAllBooks fetches all book-library items and merges in progress data.
@@ -176,15 +201,9 @@ func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 		}
 	}
 
-	inProgress, err := c.GetItemsInProgress(ctx)
+	progressMap, err := c.getAllProgress(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("items-in-progress: %w", err)
-	}
-	progressMap := map[string]*MediaProgress{}
-	for _, ip := range inProgress {
-		if ip.MediaProgress != nil {
-			progressMap[ip.ID] = ip.MediaProgress
-		}
+		return nil, fmt.Errorf("user progress: %w", err)
 	}
 
 	books := make([]Book, 0, len(itemMap))
@@ -202,6 +221,8 @@ func (c *Client) GetAllBooks(ctx context.Context) ([]Book, error) {
 			b.CurrentSeconds = p.CurrentTime
 			b.IsFinished = p.IsFinished
 			b.LastUpdate = time.Unix(p.LastUpdate/1000, 0)
+			b.StartedAt = p.StartedAt
+			b.FinishedAt = p.FinishedAt
 		}
 		books = append(books, b)
 	}

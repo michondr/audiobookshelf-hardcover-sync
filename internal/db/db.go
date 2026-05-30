@@ -3,70 +3,36 @@ package db
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-// BookStatus is the sync state of a book.
-type BookStatus string
-
-const (
-	StatusUnmatched BookStatus = "unmatched"
-	StatusMatched   BookStatus = "matched"
-	StatusIgnored   BookStatus = "ignored"
-)
-
-func (s BookStatus) Valid() bool {
-	switch s {
-	case StatusUnmatched, StatusMatched, StatusIgnored:
-		return true
-	}
-	return false
-}
-
 const schema = `
 CREATE TABLE IF NOT EXISTS books (
-	id                        INTEGER PRIMARY KEY AUTOINCREMENT,
-	abs_item_id               TEXT    NOT NULL UNIQUE,
-	abs_title                 TEXT    NOT NULL DEFAULT '',
-	abs_author                TEXT    NOT NULL DEFAULT '',
-	abs_isbn                  TEXT    NOT NULL DEFAULT '',
-	abs_asin                  TEXT    NOT NULL DEFAULT '',
-	abs_added_at              DATETIME,
-	abs_total_seconds         REAL    NOT NULL DEFAULT 0,
-	abs_current_seconds       REAL    NOT NULL DEFAULT 0,
-	abs_is_finished           INTEGER NOT NULL DEFAULT 0,
-	abs_last_seen_at          DATETIME,
-
-	hc_edition_id             INTEGER,
-	hc_book_id                INTEGER,
-	hc_user_book_id           INTEGER,
-	hc_user_book_read_id      INTEGER,
-	hc_edition_title          TEXT    NOT NULL DEFAULT '',
-	hc_edition_publisher      TEXT    NOT NULL DEFAULT '',
-	hc_edition_year           TEXT    NOT NULL DEFAULT '',
-	hc_edition_format         TEXT    NOT NULL DEFAULT '',
-	hc_edition_image_url      TEXT    NOT NULL DEFAULT '',
-
-	status                    TEXT    NOT NULL DEFAULT 'unmatched',
-	last_synced_seconds       REAL    NOT NULL DEFAULT 0,
-	last_synced_is_finished   INTEGER NOT NULL DEFAULT 0,
-	last_synced_at            DATETIME,
-	pending_reread            INTEGER NOT NULL DEFAULT 0,
-
-	candidate_edition_id      INTEGER,
-	candidate_book_id         INTEGER,
-	candidate_title           TEXT    NOT NULL DEFAULT '',
-	candidate_author          TEXT    NOT NULL DEFAULT '',
-	candidate_publisher       TEXT    NOT NULL DEFAULT '',
-	candidate_year            TEXT    NOT NULL DEFAULT '',
-	candidate_image_url       TEXT    NOT NULL DEFAULT '',
-	candidate_reason          TEXT    NOT NULL DEFAULT '',
-
-	created_at                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	updated_at                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+	abs_item_id          TEXT    NOT NULL UNIQUE,
+	abs_title            TEXT    NOT NULL DEFAULT '',
+	abs_author           TEXT    NOT NULL DEFAULT '',
+	abs_isbn             TEXT    NOT NULL DEFAULT '',
+	abs_asin             TEXT    NOT NULL DEFAULT '',
+	abs_added_at         DATETIME,
+	abs_total_seconds    REAL    NOT NULL DEFAULT 0,
+	abs_current_seconds  REAL    NOT NULL DEFAULT 0,
+	abs_is_finished      INTEGER NOT NULL DEFAULT 0,
+	abs_last_seen_at     DATETIME,
+	abs_started_at       DATETIME,
+	abs_finished_at      DATETIME,
+	hc_edition_id        INTEGER,
+	hc_book_id           INTEGER,
+	hc_ignored           INTEGER NOT NULL DEFAULT 0,
+	hc_candidates_json   TEXT    NOT NULL DEFAULT '',
+	hc_edition_data_json TEXT    NOT NULL DEFAULT '',
+	hc_match_searched_at DATETIME,
+	created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TRIGGER IF NOT EXISTS books_updated_at
@@ -76,10 +42,45 @@ BEGIN
 END;
 `
 
-// migrations run at startup; errors are ignored (column may already exist).
+// migrations run at startup; errors are ignored (column may already exist / not exist).
 var migrations = []string{
+	// additive migrations (idempotent: ignored if column exists)
 	`ALTER TABLE books ADD COLUMN abs_total_seconds REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE books ADD COLUMN abs_added_at DATETIME`,
+	`ALTER TABLE books ADD COLUMN abs_started_at DATETIME`,
+	`ALTER TABLE books ADD COLUMN abs_finished_at DATETIME`,
+	// drop HC columns (idempotent: ignored if column doesn't exist)
+	`ALTER TABLE books DROP COLUMN hc_edition_id`,
+	`ALTER TABLE books DROP COLUMN hc_book_id`,
+	`ALTER TABLE books DROP COLUMN hc_user_book_id`,
+	`ALTER TABLE books DROP COLUMN hc_user_book_read_id`,
+	`ALTER TABLE books DROP COLUMN hc_edition_title`,
+	`ALTER TABLE books DROP COLUMN hc_edition_publisher`,
+	`ALTER TABLE books DROP COLUMN hc_edition_year`,
+	`ALTER TABLE books DROP COLUMN hc_edition_format`,
+	`ALTER TABLE books DROP COLUMN hc_edition_image_url`,
+	`ALTER TABLE books DROP COLUMN hc_current_seconds`,
+	`ALTER TABLE books DROP COLUMN status`,
+	`ALTER TABLE books DROP COLUMN last_synced_seconds`,
+	`ALTER TABLE books DROP COLUMN last_synced_is_finished`,
+	`ALTER TABLE books DROP COLUMN last_synced_at`,
+	`ALTER TABLE books DROP COLUMN pending_reread`,
+	`ALTER TABLE books DROP COLUMN candidate_edition_id`,
+	`ALTER TABLE books DROP COLUMN candidate_book_id`,
+	`ALTER TABLE books DROP COLUMN candidate_title`,
+	`ALTER TABLE books DROP COLUMN candidate_author`,
+	`ALTER TABLE books DROP COLUMN candidate_publisher`,
+	`ALTER TABLE books DROP COLUMN candidate_year`,
+	`ALTER TABLE books DROP COLUMN candidate_image_url`,
+	`ALTER TABLE books DROP COLUMN candidate_reason`,
+	`ALTER TABLE books DROP COLUMN candidates_json`,
+	// re-add HC columns with new schema
+	`ALTER TABLE books ADD COLUMN hc_edition_id INTEGER`,
+	`ALTER TABLE books ADD COLUMN hc_book_id INTEGER`,
+	`ALTER TABLE books ADD COLUMN hc_ignored INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE books ADD COLUMN hc_candidates_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE books ADD COLUMN hc_edition_data_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE books ADD COLUMN hc_match_searched_at DATETIME`,
 }
 
 type DB struct {
@@ -98,7 +99,7 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 	for _, m := range migrations {
-		_, _ = sqlDB.Exec(m) // ignore "duplicate column" error on re-runs
+		_, _ = sqlDB.Exec(m) // ignore "duplicate column" / "no such column" errors on re-runs
 	}
 
 	return &DB{sql: sqlDB}, nil
@@ -106,111 +107,121 @@ func Open(path string) (*DB, error) {
 
 func (d *DB) Close() error { return d.sql.Close() }
 
-// Book is the central data type representing a synced book.
+// CandidateEdition holds the edition data we cache locally for display and matching.
+type CandidateEdition struct {
+	ID        int64  `json:"id"`
+	BookID    int64  `json:"book_id"`
+	Title     string `json:"title"`
+	Author    string `json:"author"`
+	Publisher string `json:"publisher"`
+	Year      int    `json:"year"`
+	FormatID  int    `json:"format_id"`
+	ImageURL  string `json:"image_url"`
+	ISBN13    string `json:"isbn_13"`
+	ASIN      string `json:"asin"`
+}
+
+func (c CandidateEdition) FormatName() string {
+	if c.FormatID == 4 {
+		return "Ebook"
+	}
+	return "Audiobook"
+}
+
 type Book struct {
-	ID            int64
-	ABSItemID     string
-	ABSTitle      string
-	ABSAuthor     string
-	ABSISBN       string
-	ABSASIN       string
-	ABSAddedAt         *time.Time
-	ABSTotalSeconds    float64
-	ABSCurrentSeconds  float64
-	ABSIsFinished      bool
-	ABSLastSeenAt      *time.Time
-
-	HCEditionID        *int64
-	HCBookID           *int64
-	HCUserBookID       *int64
-	HCUserBookReadID   *int64
-	HCEditionTitle     string
-	HCEditionPublisher string
-	HCEditionYear      string
-	HCEditionFormat    string
-	HCEditionImageURL  string
-
-	Status               BookStatus
-	LastSyncedSeconds    float64
-	LastSyncedIsFinished bool
-	LastSyncedAt         *time.Time
-	PendingReread        bool
-
-	CandidateEditionID  *int64
-	CandidateBookID     *int64
-	CandidateTitle      string
-	CandidateAuthor     string
-	CandidatePublisher  string
-	CandidateYear       string
-	CandidateImageURL   string
-	CandidateReason     string
-
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                  int64
+	ABSItemID           string
+	ABSTitle            string
+	ABSAuthor           string
+	ABSISBN             string
+	ABSASIN             string
+	ABSAddedAt          *time.Time
+	ABSTotalSeconds     float64
+	ABSCurrentSeconds   float64
+	ABSIsFinished       bool
+	ABSLastSeenAt       *time.Time
+	ABSStartedAt        *time.Time
+	ABSFinishedAt       *time.Time
+	HCEditionID         *int64
+	HCBookID            *int64
+	HCIgnored           bool
+	HCCandidatesJSON    string
+	HCEditionDataJSON   string
+	HCMatchSearchedAt   *time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
-func (b Book) NeedsSync() bool {
-	if b.Status != StatusMatched {
-		return false
+func (b Book) ParsedCandidates() []CandidateEdition {
+	if b.HCCandidatesJSON == "" {
+		return nil
 	}
-	if b.ABSIsFinished && !b.LastSyncedIsFinished {
-		return true
-	}
-	return b.ABSCurrentSeconds-b.LastSyncedSeconds >= 120
+	var out []CandidateEdition
+	_ = json.Unmarshal([]byte(b.HCCandidatesJSON), &out)
+	return out
 }
 
-type BooksByCategory struct {
-	Unmatched []Book
-	NeedsSync []Book
-	Synced    []Book
-	Ignored   []Book
+func (b Book) ParsedEdition() *CandidateEdition {
+	if b.HCEditionDataJSON == "" {
+		return nil
+	}
+	var out CandidateEdition
+	if err := json.Unmarshal([]byte(b.HCEditionDataJSON), &out); err != nil {
+		return nil
+	}
+	return &out
 }
 
 const selectAll = `
 SELECT
 	id, abs_item_id, abs_title, abs_author, abs_isbn, abs_asin,
-	abs_added_at, abs_total_seconds, abs_current_seconds, abs_is_finished, abs_last_seen_at,
-	hc_edition_id, hc_book_id, hc_user_book_id, hc_user_book_read_id,
-	hc_edition_title, hc_edition_publisher, hc_edition_year, hc_edition_format, hc_edition_image_url,
-	status, last_synced_seconds, last_synced_is_finished, last_synced_at, pending_reread,
-	candidate_edition_id, candidate_book_id, candidate_title, candidate_author,
-	candidate_publisher, candidate_year, candidate_image_url, candidate_reason,
+	abs_added_at, abs_total_seconds, abs_current_seconds, abs_is_finished,
+	abs_last_seen_at, abs_started_at, abs_finished_at,
+	hc_edition_id, hc_book_id, hc_ignored, hc_candidates_json, hc_edition_data_json, hc_match_searched_at,
 	created_at, updated_at
 FROM books
 `
 
 func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 	var b Book
-	var absAddedAt, absLastSeen, lastSyncedAt sql.NullTime
-	var absIsFinished, lastSyncedIsFinished, pendingReread int
-	var status string
+	var absAddedAt, absLastSeen, absStartedAt, absFinishedAt sql.NullTime
+	var absIsFinished, hcIgnored int
+	var hcEditionID, hcBookID sql.NullInt64
+	var hcMatchSearchedAt sql.NullTime
 
 	err := row.Scan(
 		&b.ID, &b.ABSItemID, &b.ABSTitle, &b.ABSAuthor, &b.ABSISBN, &b.ABSASIN,
-		&absAddedAt, &b.ABSTotalSeconds, &b.ABSCurrentSeconds, &absIsFinished, &absLastSeen,
-		&b.HCEditionID, &b.HCBookID, &b.HCUserBookID, &b.HCUserBookReadID,
-		&b.HCEditionTitle, &b.HCEditionPublisher, &b.HCEditionYear, &b.HCEditionFormat, &b.HCEditionImageURL,
-		&status, &b.LastSyncedSeconds, &lastSyncedIsFinished, &lastSyncedAt, &pendingReread,
-		&b.CandidateEditionID, &b.CandidateBookID, &b.CandidateTitle, &b.CandidateAuthor,
-		&b.CandidatePublisher, &b.CandidateYear, &b.CandidateImageURL, &b.CandidateReason,
+		&absAddedAt, &b.ABSTotalSeconds, &b.ABSCurrentSeconds, &absIsFinished,
+		&absLastSeen, &absStartedAt, &absFinishedAt,
+		&hcEditionID, &hcBookID, &hcIgnored, &b.HCCandidatesJSON, &b.HCEditionDataJSON, &hcMatchSearchedAt,
 		&b.CreatedAt, &b.UpdatedAt,
 	)
 	if err != nil {
 		return Book{}, err
 	}
 
-	b.Status = BookStatus(status)
 	b.ABSIsFinished = absIsFinished != 0
+	b.HCIgnored = hcIgnored != 0
 	if absAddedAt.Valid {
 		b.ABSAddedAt = &absAddedAt.Time
 	}
-	b.LastSyncedIsFinished = lastSyncedIsFinished != 0
-	b.PendingReread = pendingReread != 0
 	if absLastSeen.Valid {
 		b.ABSLastSeenAt = &absLastSeen.Time
 	}
-	if lastSyncedAt.Valid {
-		b.LastSyncedAt = &lastSyncedAt.Time
+	if absStartedAt.Valid {
+		b.ABSStartedAt = &absStartedAt.Time
+	}
+	if absFinishedAt.Valid {
+		b.ABSFinishedAt = &absFinishedAt.Time
+	}
+	if hcEditionID.Valid {
+		b.HCEditionID = &hcEditionID.Int64
+	}
+	if hcBookID.Valid {
+		b.HCBookID = &hcBookID.Int64
+	}
+	if hcMatchSearchedAt.Valid {
+		b.HCMatchSearchedAt = &hcMatchSearchedAt.Time
 	}
 	return b, nil
 }
@@ -242,26 +253,27 @@ func (d *DB) ListAllBooks(ctx context.Context) ([]Book, error) {
 	return books, rows.Err()
 }
 
-func (d *DB) ListBooksByCategory(ctx context.Context) (BooksByCategory, error) {
-	books, err := d.ListAllBooks(ctx)
+func (d *DB) ListUnmatchedBooks(ctx context.Context) ([]Book, error) {
+	rows, err := d.sql.QueryContext(ctx, selectAll+`
+		WHERE hc_edition_id IS NULL
+		  AND hc_ignored = 0
+		  AND hc_match_searched_at IS NULL
+		ORDER BY abs_added_at DESC, created_at DESC, id DESC
+	`)
 	if err != nil {
-		return BooksByCategory{}, err
+		return nil, err
 	}
+	defer rows.Close()
 
-	var cats BooksByCategory
-	for _, b := range books {
-		switch {
-		case b.Status == StatusIgnored:
-			cats.Ignored = append(cats.Ignored, b)
-		case b.Status == StatusUnmatched:
-			cats.Unmatched = append(cats.Unmatched, b)
-		case b.NeedsSync():
-			cats.NeedsSync = append(cats.NeedsSync, b)
-		default:
-			cats.Synced = append(cats.Synced, b)
+	var books []Book
+	for rows.Next() {
+		b, err := scanBook(rows)
+		if err != nil {
+			return nil, err
 		}
+		books = append(books, b)
 	}
-	return cats, nil
+	return books, rows.Err()
 }
 
 func (d *DB) UpsertABSBook(ctx context.Context, absItemID, title, author, isbn, asin string, addedAt time.Time, totalSeconds float64) error {
@@ -279,7 +291,7 @@ func (d *DB) UpsertABSBook(ctx context.Context, absItemID, title, author, isbn, 
 	return err
 }
 
-func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSeconds float64, isFinished bool, lastSeenAt time.Time) error {
+func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSeconds float64, isFinished bool, lastSeenAt time.Time, startedAt, finishedAt *time.Time) error {
 	fin := 0
 	if isFinished {
 		fin = 1
@@ -288,111 +300,76 @@ func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSec
 		UPDATE books SET
 			abs_current_seconds = ?,
 			abs_is_finished     = ?,
-			abs_last_seen_at    = ?
+			abs_last_seen_at    = ?,
+			abs_started_at      = CASE WHEN ? IS NOT NULL THEN ? ELSE abs_started_at END,
+			abs_finished_at     = CASE WHEN ? IS NOT NULL THEN ? ELSE abs_finished_at END
 		WHERE abs_item_id = ?
-	`, currentSeconds, fin, lastSeenAt, absItemID)
+	`, currentSeconds, fin, lastSeenAt, startedAt, startedAt, finishedAt, finishedAt, absItemID)
 	return err
 }
 
-func (d *DB) SetStatus(ctx context.Context, id int64, status BookStatus) error {
-	if !status.Valid() {
-		return fmt.Errorf("invalid status %q", status)
-	}
-	_, err := d.sql.ExecContext(ctx, `UPDATE books SET status = ? WHERE id = ?`, string(status), id)
-	return err
-}
-
-type MatchCandidate struct {
-	EditionID  int64
-	BookID     int64
-	Title      string
-	Author     string
-	Publisher  string
-	Year       string
-	ImageURL   string
-	Reason     string
-}
-
-func (d *DB) SetMatchCandidate(ctx context.Context, bookID int64, c MatchCandidate) error {
-	_, err := d.sql.ExecContext(ctx, `
-		UPDATE books SET
-			candidate_edition_id = ?,
-			candidate_book_id    = ?,
-			candidate_title      = ?,
-			candidate_author     = ?,
-			candidate_publisher  = ?,
-			candidate_year       = ?,
-			candidate_image_url  = ?,
-			candidate_reason     = ?
-		WHERE id = ?
-	`, c.EditionID, c.BookID, c.Title, c.Author, c.Publisher, c.Year, c.ImageURL, c.Reason, bookID)
-	return err
-}
-
-type HCMatch struct {
-	EditionID      int64
-	BookID         int64
-	UserBookID     int64
-	UserBookReadID int64
-	EditionTitle   string
-	Publisher      string
-	Year           string
-	Format         string
-	ImageURL       string
-}
-
-func (d *DB) SetMatch(ctx context.Context, bookID int64, m HCMatch) error {
+func (d *DB) SetHCEdition(ctx context.Context, id int64, e CandidateEdition) error {
+	data, _ := json.Marshal(e)
 	_, err := d.sql.ExecContext(ctx, `
 		UPDATE books SET
 			hc_edition_id        = ?,
 			hc_book_id           = ?,
-			hc_user_book_id      = ?,
-			hc_user_book_read_id = ?,
-			hc_edition_title     = ?,
-			hc_edition_publisher = ?,
-			hc_edition_year      = ?,
-			hc_edition_format    = ?,
-			hc_edition_image_url = ?,
-			status               = 'matched',
-			candidate_edition_id = NULL,
-			candidate_book_id    = NULL,
-			candidate_title      = '',
-			candidate_author     = '',
-			candidate_publisher  = '',
-			candidate_year       = '',
-			candidate_image_url  = '',
-			candidate_reason     = ''
+			hc_edition_data_json = ?,
+			hc_candidates_json   = '',
+			hc_match_searched_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, m.EditionID, m.BookID, m.UserBookID, m.UserBookReadID,
-		m.EditionTitle, m.Publisher, m.Year, m.Format, m.ImageURL, bookID)
+	`, e.ID, e.BookID, string(data), id)
 	return err
 }
 
-func (d *DB) UpdateLastSynced(ctx context.Context, bookID int64, seconds float64, isFinished bool, at time.Time) error {
-	fin := 0
-	if isFinished {
-		fin = 1
-	}
+func (d *DB) SetHCCandidates(ctx context.Context, id int64, candidates []CandidateEdition) error {
+	data, _ := json.Marshal(candidates)
 	_, err := d.sql.ExecContext(ctx, `
 		UPDATE books SET
-			last_synced_seconds     = ?,
-			last_synced_is_finished = ?,
-			last_synced_at          = ?
+			hc_edition_id        = NULL,
+			hc_book_id           = NULL,
+			hc_edition_data_json = '',
+			hc_candidates_json   = ?,
+			hc_match_searched_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, seconds, fin, at, bookID)
+	`, string(data), id)
 	return err
 }
 
-func (d *DB) SetPendingReread(ctx context.Context, bookID int64, pending bool) error {
+func (d *DB) SetHCMatchSearched(ctx context.Context, id int64) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE books SET hc_match_searched_at = CURRENT_TIMESTAMP WHERE id = ?
+	`, id)
+	return err
+}
+
+// UnmatchBook clears a confirmed match and resets the book so the next sync
+// re-matches it from scratch.
+func (d *DB) UnmatchBook(ctx context.Context, id int64) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE books SET
+			hc_edition_id        = NULL,
+			hc_book_id           = NULL,
+			hc_edition_data_json = '',
+			hc_candidates_json   = '',
+			hc_match_searched_at = NULL
+		WHERE id = ?
+	`, id)
+	return err
+}
+
+func (d *DB) SetHCIgnored(ctx context.Context, id int64, ignored bool) error {
 	v := 0
-	if pending {
+	if ignored {
 		v = 1
 	}
-	_, err := d.sql.ExecContext(ctx, `UPDATE books SET pending_reread = ? WHERE id = ?`, v, bookID)
+	_, err := d.sql.ExecContext(ctx, `UPDATE books SET hc_ignored = ? WHERE id = ?`, v, id)
 	return err
 }
 
-func (d *DB) SetHCUserBookReadID(ctx context.Context, bookID int64, readID int64) error {
-	_, err := d.sql.ExecContext(ctx, `UPDATE books SET hc_user_book_read_id = ? WHERE id = ?`, readID, bookID)
+func (d *DB) UnignoreBook(ctx context.Context, id int64) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE books SET hc_ignored = 0, hc_match_searched_at = NULL WHERE id = ?
+	`, id)
 	return err
 }

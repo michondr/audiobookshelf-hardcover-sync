@@ -13,8 +13,8 @@ import (
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/abs"
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/config"
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
-	syncsvc "github.com/michondr/audiobookshelf-hardcover-sync/internal/sync"
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/hardcover"
+	syncsvc "github.com/michondr/audiobookshelf-hardcover-sync/internal/sync"
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/web"
 )
 
@@ -38,7 +38,6 @@ func main() {
 	hcClient := hardcover.New(cfg.HardcoverToken)
 	syncService := syncsvc.New(database, absClient, hcClient, log)
 
-	// Cron scheduler
 	loc, err := time.LoadLocation(cfg.CronTimezone)
 	if err != nil {
 		log.Error("load timezone", "tz", cfg.CronTimezone, "err", err)
@@ -46,22 +45,18 @@ func main() {
 	}
 
 	c := cron.New(cron.WithLocation(loc))
-
 	entryID, err := c.AddFunc(cfg.CronSchedule, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-
-		log.Info("cron: starting sync")
-		// RefreshFromABS also runs re-read detection internally.
+		log.Info("cron: starting refresh")
 		if err := syncService.RefreshFromABS(ctx); err != nil {
 			log.Error("cron: refresh from ABS", "err", err)
+			return
 		}
-		n, err := syncService.SyncAllProgress(ctx)
-		if err != nil {
-			log.Error("cron: sync progress", "err", err)
-		} else {
-			log.Info("cron: sync complete", "books_synced", n)
+		if err := syncService.MatchUnmatched(ctx); err != nil {
+			log.Error("cron: match unmatched", "err", err)
 		}
+		log.Info("cron: refresh complete")
 	})
 	if err != nil {
 		log.Error("cron schedule", "schedule", cfg.CronSchedule, "err", err)
@@ -75,14 +70,14 @@ func main() {
 		return c.Entry(entryID).Next
 	}
 
-	handler := web.NewServer(database, absClient, syncService, log, nextSync)
+	handler := web.NewServer(database, absClient, hcClient, syncService, log, nextSync)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 90 * time.Second, // generous for cover proxy streaming
+		WriteTimeout: 90 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 

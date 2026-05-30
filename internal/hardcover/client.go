@@ -458,6 +458,98 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, readID int64, progressS
 	return nil
 }
 
+// ── my library ────────────────────────────────────────────────────────────
+
+// UserBookSummary is one entry from the user's Hardcover library.
+type UserBookSummary struct {
+	ID       int64     `json:"id"`
+	StatusID int       `json:"status_id"`
+	BookID   int64     `json:"book_id"`
+	Book     *BookInfo `json:"book"`    // always present; use for title matching
+	Edition  *Edition  `json:"edition"` // null when no specific edition was chosen
+	Reads    []struct {
+		ID              int64   `json:"id"`
+		ProgressSeconds float64 `json:"progress_seconds"`
+	} `json:"user_book_reads"`
+}
+
+func (u UserBookSummary) ActiveReadID() *int64 {
+	if len(u.Reads) > 0 {
+		id := u.Reads[0].ID
+		return &id
+	}
+	return nil
+}
+
+func (u UserBookSummary) ActiveReadProgress() float64 {
+	if len(u.Reads) > 0 {
+		return u.Reads[0].ProgressSeconds
+	}
+	return 0
+}
+
+// Title returns the best available title for matching.
+func (u UserBookSummary) Title() string {
+	if u.Book != nil {
+		return u.Book.Title
+	}
+	if u.Edition != nil {
+		return u.Edition.DisplayTitle()
+	}
+	return ""
+}
+
+const queryGetMyUserBooks = `
+query GetMyUserBooks($limit: Int!, $offset: Int!) {
+  user_books(limit: $limit, offset: $offset, order_by: {created_at: desc}) {
+    id
+    status_id
+    book_id
+    book {
+      id title
+      contributions(limit: 1) { author { name } }
+    }
+    edition {
+      id book_id isbn_13 isbn_10 asin reading_format_id release_year
+      image { url }
+      publisher { name }
+      book {
+        id title
+        contributions(limit: 1) { author { name } }
+      }
+    }
+    user_book_reads(where: {finished_at: {_is_null: true}}, order_by: {created_at: desc}, limit: 1) {
+      id
+      progress_seconds
+    }
+  }
+}`
+
+// GetMyUserBooks returns all books in the authenticated user's Hardcover library,
+// paginating automatically.
+func (c *Client) GetMyUserBooks(ctx context.Context) ([]UserBookSummary, error) {
+	const limit = 250
+	var all []UserBookSummary
+	offset := 0
+
+	for {
+		var data struct {
+			UserBooks []UserBookSummary `json:"user_books"`
+		}
+		if err := c.do(ctx, queryGetMyUserBooks, map[string]any{
+			"limit": limit, "offset": offset,
+		}, &data); err != nil {
+			return nil, err
+		}
+		all = append(all, data.UserBooks...)
+		if len(data.UserBooks) < limit {
+			break
+		}
+		offset += limit
+	}
+	return all, nil
+}
+
 func (c *Client) UpdateUserBookStatus(ctx context.Context, userBookID int64, statusID int) error {
 	var data struct {
 		UpdateUserBook struct {
