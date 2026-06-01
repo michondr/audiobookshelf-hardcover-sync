@@ -22,7 +22,15 @@ templ Layout(nextSync string) {
 						hx-swap="innerHTML"
 						hx-indicator="#sync-spinner"
 					>▶ Sync Now</button>
-					<span id="sync-spinner" class="htmx-indicator">syncing…</span>
+					<button
+						class="btn btn-secondary btn-sm"
+						hx-post="/rematch"
+						hx-target="#sync-toast"
+						hx-swap="innerHTML"
+						hx-indicator="#sync-spinner"
+						hx-confirm="Re-run Hardcover matching for every book that isn't matched or ignored?"
+					>↻ Re-match</button>
+					<span id="sync-spinner" class="htmx-indicator">working…</span>
 				</div>
 			</header>
 			<div id="sync-toast"></div>

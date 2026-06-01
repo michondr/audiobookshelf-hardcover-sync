@@ -42,6 +42,7 @@ func NewServer(
 	mux.HandleFunc("/abs-link/", h.handleAbsLink)
 	mux.HandleFunc("/proxy/abs-cover/", h.handleAbsCoverProxy)
 	mux.HandleFunc("POST /sync", h.handleSyncAll)
+	mux.HandleFunc("POST /rematch", h.handleRematch)
 	mux.HandleFunc("POST /book/{id}/set-edition", h.handleSetEdition)
 	mux.HandleFunc("POST /book/{id}/unmatch", h.handleUnmatchBook)
 	mux.HandleFunc("POST /book/{id}/ignore", h.handleIgnoreBook)

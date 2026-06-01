@@ -40,6 +40,9 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if ns := h.nextSync(); !ns.IsZero() {
 		nextSync = "Next sync: " + ns.Format("Mon 15:04")
 	}
+	if h.sync.Matching() {
+		nextSync = "⏳ Matching… · " + nextSync
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = templates.Index(books, nextSync).Render(r.Context(), w)
@@ -77,12 +80,35 @@ func (h *handler) handleSyncAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.sync.MatchUnmatched(r.Context()); err != nil {
-		h.log.Error("match unmatched", "err", err)
+	// Matching hits Hardcover for many books and can take minutes, so run it in
+	// the background rather than blocking the request (and tripping the server's
+	// write timeout).
+	started := h.sync.MatchUnmatchedInBackground()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if started {
+		fmt.Fprint(w, `<div class="toast">Synced from ABS. Matching against Hardcover in the background — refresh in a minute to see results.</div>`)
+	} else {
+		fmt.Fprint(w, `<div class="toast">Synced from ABS. A match pass is already running.</div>`)
+	}
+}
+
+func (h *handler) handleRematch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if h.sync.Matching() {
+		fmt.Fprint(w, `<div class="toast">A match pass is already running.</div>`)
+		return
 	}
 
-	w.Header().Set("HX-Refresh", "true")
-	w.WriteHeader(http.StatusNoContent)
+	if err := h.db.ResetUnmatchedSearch(r.Context()); err != nil {
+		h.log.Error("reset unmatched search", "err", err)
+		fmt.Fprintf(w, `<div class="toast error">Re-match error: %s</div>`, err.Error())
+		return
+	}
+
+	h.sync.MatchUnmatchedInBackground()
+	fmt.Fprint(w, `<div class="toast">Re-matching every un-matched book against Hardcover in the background — refresh in a minute to see results.</div>`)
 }
 
 func (h *handler) handleSetEdition(w http.ResponseWriter, r *http.Request) {

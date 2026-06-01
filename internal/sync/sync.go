@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -18,6 +19,29 @@ type Service struct {
 	abs *abs.Client
 	hc  *hardcover.Client
 	log *slog.Logger
+
+	matching atomic.Bool // true while a background match pass is running
+}
+
+// Matching reports whether a background match pass is currently running.
+func (s *Service) Matching() bool { return s.matching.Load() }
+
+// MatchUnmatchedInBackground starts a match pass in a goroutine unless one is
+// already running. Returns true if it started a new pass. It uses its own
+// context so it survives the HTTP request that triggered it.
+func (s *Service) MatchUnmatchedInBackground() bool {
+	if !s.matching.CompareAndSwap(false, true) {
+		return false
+	}
+	go func() {
+		defer s.matching.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		if err := s.MatchUnmatched(ctx); err != nil {
+			s.log.Error("background match", "err", err)
+		}
+	}()
+	return true
 }
 
 func New(database *db.DB, absClient *abs.Client, hcClient *hardcover.Client, log *slog.Logger) *Service {
@@ -74,6 +98,7 @@ func (s *Service) MatchUnmatched(ctx context.Context) error {
 		s.log.Warn("load HC library", "err", err)
 	}
 
+	var matched, viaLibrary, candidates, notFound int
 	for _, book := range books {
 		// 1. Already in the user's Hardcover library?
 		if lib != nil {
@@ -81,33 +106,42 @@ func (s *Service) MatchUnmatched(ctx context.Context) error {
 				if err := s.db.SetHCEdition(ctx, book.ID, *cand); err != nil {
 					s.log.Error("set edition (library)", "book_id", book.ID, "err", err)
 				}
+				matched++
+				viaLibrary++
 				continue
 			}
 		}
 
 		// 2. Fall back to a Hardcover catalog search.
-		candidates, err := s.searchHC(ctx, book)
+		found, err := s.searchHC(ctx, book)
 		if err != nil {
 			s.log.Warn("HC search failed", "book_id", book.ID, "title", book.ABSTitle, "err", err)
 			_ = s.db.SetHCMatchSearched(ctx, book.ID)
+			notFound++
 			continue
 		}
 
-		switch len(candidates) {
+		switch len(found) {
 		case 0:
 			if err := s.db.SetHCMatchSearched(ctx, book.ID); err != nil {
 				s.log.Error("set searched", "book_id", book.ID, "err", err)
 			}
+			notFound++
 		case 1:
-			if err := s.db.SetHCEdition(ctx, book.ID, candidates[0]); err != nil {
+			if err := s.db.SetHCEdition(ctx, book.ID, found[0]); err != nil {
 				s.log.Error("set edition", "book_id", book.ID, "err", err)
 			}
+			matched++
 		default:
-			if err := s.db.SetHCCandidates(ctx, book.ID, candidates); err != nil {
+			if err := s.db.SetHCCandidates(ctx, book.ID, found); err != nil {
 				s.log.Error("set candidates", "book_id", book.ID, "err", err)
 			}
+			candidates++
 		}
 	}
+	s.log.Info("match pass complete",
+		"books", len(books), "matched", matched, "via_library", viaLibrary,
+		"candidates", candidates, "not_found", notFound)
 	return nil
 }
 
@@ -176,18 +210,18 @@ func (s *Service) matchInLibrary(ctx context.Context, book db.Book, idx *library
 		return nil
 	}
 
-	// Prefer the edition the user actually tracks; otherwise resolve an
-	// audiobook edition for the matched book.
+	// Prefer an audiobook edition of the matched book — ABS is audiobook-centric,
+	// and the user's shelf edition is often the print/ebook. Fall back to whatever
+	// edition they actually have if no audiobook edition exists.
+	if eds, err := s.hc.GetEditionsByBookID(ctx, ub.BookID); err == nil && len(eds) > 0 {
+		c := editionToCandidate(eds[0])
+		return &c
+	}
 	if ub.Edition != nil {
 		c := editionToCandidate(*ub.Edition)
 		return &c
 	}
-	eds, err := s.hc.GetEditionsByBookID(ctx, ub.BookID)
-	if err != nil || len(eds) == 0 {
-		return nil
-	}
-	c := editionToCandidate(eds[0])
-	return &c
+	return nil
 }
 
 func (s *Service) searchHC(ctx context.Context, book db.Book) ([]db.CandidateEdition, error) {

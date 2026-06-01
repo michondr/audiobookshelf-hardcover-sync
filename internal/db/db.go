@@ -43,15 +43,24 @@ END;
 `
 
 // migrations run at startup; errors are ignored (column may already exist / not exist).
+//
+// IMPORTANT: every statement here must be idempotent AND non-destructive, because
+// it runs on every boot. ADD COLUMN is safe (ignored if the column exists). DROP
+// COLUMN is only safe for columns that no longer belong to the current schema —
+// never drop a live column, or its data is wiped on every restart.
 var migrations = []string{
-	// additive migrations (idempotent: ignored if column exists)
+	// additive migrations for current columns (idempotent: ignored if column exists)
 	`ALTER TABLE books ADD COLUMN abs_total_seconds REAL NOT NULL DEFAULT 0`,
 	`ALTER TABLE books ADD COLUMN abs_added_at DATETIME`,
 	`ALTER TABLE books ADD COLUMN abs_started_at DATETIME`,
 	`ALTER TABLE books ADD COLUMN abs_finished_at DATETIME`,
-	// drop HC columns (idempotent: ignored if column doesn't exist)
-	`ALTER TABLE books DROP COLUMN hc_edition_id`,
-	`ALTER TABLE books DROP COLUMN hc_book_id`,
+	`ALTER TABLE books ADD COLUMN hc_edition_id INTEGER`,
+	`ALTER TABLE books ADD COLUMN hc_book_id INTEGER`,
+	`ALTER TABLE books ADD COLUMN hc_ignored INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE books ADD COLUMN hc_candidates_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE books ADD COLUMN hc_edition_data_json TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE books ADD COLUMN hc_match_searched_at DATETIME`,
+	// one-time cleanup of columns removed in the refactor (no-op once gone)
 	`ALTER TABLE books DROP COLUMN hc_user_book_id`,
 	`ALTER TABLE books DROP COLUMN hc_user_book_read_id`,
 	`ALTER TABLE books DROP COLUMN hc_edition_title`,
@@ -74,13 +83,14 @@ var migrations = []string{
 	`ALTER TABLE books DROP COLUMN candidate_image_url`,
 	`ALTER TABLE books DROP COLUMN candidate_reason`,
 	`ALTER TABLE books DROP COLUMN candidates_json`,
-	// re-add HC columns with new schema
-	`ALTER TABLE books ADD COLUMN hc_edition_id INTEGER`,
-	`ALTER TABLE books ADD COLUMN hc_book_id INTEGER`,
-	`ALTER TABLE books ADD COLUMN hc_ignored INTEGER NOT NULL DEFAULT 0`,
-	`ALTER TABLE books ADD COLUMN hc_candidates_json TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE books ADD COLUMN hc_edition_data_json TEXT NOT NULL DEFAULT ''`,
-	`ALTER TABLE books ADD COLUMN hc_match_searched_at DATETIME`,
+	// self-heal: restore edition/book IDs wiped by the old destructive migration,
+	// reconstructing them from the cached edition JSON (idempotent).
+	`UPDATE books
+	    SET hc_edition_id = json_extract(hc_edition_data_json, '$.id'),
+	        hc_book_id    = json_extract(hc_edition_data_json, '$.book_id')
+	  WHERE hc_edition_id IS NULL
+	    AND hc_edition_data_json != ''
+	    AND json_valid(hc_edition_data_json)`,
 }
 
 type DB struct {
@@ -340,6 +350,19 @@ func (d *DB) SetHCMatchSearched(ctx context.Context, id int64) error {
 	_, err := d.sql.ExecContext(ctx, `
 		UPDATE books SET hc_match_searched_at = CURRENT_TIMESTAMP WHERE id = ?
 	`, id)
+	return err
+}
+
+// ResetUnmatchedSearch clears the "searched" marker (and any stale candidates)
+// on every book that isn't matched or ignored, so the next match pass
+// reconsiders them from scratch. Used to re-run matching after a logic change.
+func (d *DB) ResetUnmatchedSearch(ctx context.Context) error {
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE books SET
+			hc_match_searched_at = NULL,
+			hc_candidates_json   = ''
+		WHERE hc_edition_id IS NULL AND hc_ignored = 0
+	`)
 	return err
 }
 

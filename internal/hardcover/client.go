@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,9 +23,17 @@ const (
 	FormatEbook            = 4
 )
 
+// minRequestInterval spaces out requests to stay under Hardcover's rate limit
+// (~60/min). Without this, a bulk match pass gets throttled and requests come
+// back with empty bodies.
+const minRequestInterval = 1100 * time.Millisecond
+
 type Client struct {
 	token string
 	http  *http.Client
+
+	mu      sync.Mutex // guards lastReq; serializes the rate-limit gate
+	lastReq time.Time
 }
 
 func New(token string) *Client {
@@ -30,6 +41,31 @@ func New(token string) *Client {
 		token: token,
 		http:  &http.Client{Timeout: 30 * time.Second},
 	}
+}
+
+// throttle blocks until at least minRequestInterval has elapsed since the
+// previous request. It reserves its slot under the lock, then sleeps unlocked so
+// concurrent callers queue rather than collide.
+func (c *Client) throttle() {
+	c.mu.Lock()
+	now := time.Now()
+	next := c.lastReq.Add(minRequestInterval)
+	if next.After(now) {
+		c.lastReq = next
+		c.mu.Unlock()
+		time.Sleep(next.Sub(now))
+		return
+	}
+	c.lastReq = now
+	c.mu.Unlock()
+}
+
+func snippet(b []byte) string {
+	s := strings.TrimSpace(string(b))
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
 }
 
 // ── transport ──────────────────────────────────────────────────────────────
@@ -46,40 +82,80 @@ type gqlResponse struct {
 	} `json:"errors"`
 }
 
+// do runs a GraphQL request, throttled to respect the rate limit and retried
+// with backoff on transient failures (429, 5xx, network errors, empty bodies).
 func (c *Client) do(ctx context.Context, query string, vars map[string]any, out any) error {
+	const maxAttempts = 4
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(attempt) * 2 * time.Second
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		c.throttle()
+		retryable, err := c.doOnce(ctx, query, vars, out)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !retryable {
+			return err
+		}
+	}
+	return fmt.Errorf("hardcover request failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// doOnce performs a single attempt. The bool reports whether the error is worth
+// retrying.
+func (c *Client) doOnce(ctx context.Context, query string, vars map[string]any, out any) (retryable bool, err error) {
 	body, err := json.Marshal(gqlRequest{Query: query, Variables: vars})
 	if err != nil {
-		return err
+		return false, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("graphql: %w", err)
+		return true, fmt.Errorf("graphql: %w", err)
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return true, err
+	}
+
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return true, fmt.Errorf("hardcover http %d: %s", resp.StatusCode, snippet(raw))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("hardcover http %d: %s", resp.StatusCode, snippet(raw))
 	}
 
 	var gr gqlResponse
 	if err := json.Unmarshal(raw, &gr); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+		return false, fmt.Errorf("decode response: %w (body: %s)", err, snippet(raw))
 	}
 	if len(gr.Errors) > 0 {
-		return fmt.Errorf("graphql error: %s", gr.Errors[0].Message)
+		return false, fmt.Errorf("graphql error: %s", gr.Errors[0].Message)
 	}
 	if out != nil {
-		return json.Unmarshal(gr.Data, out)
+		if len(gr.Data) == 0 {
+			// 200 with no data and no errors — typically a soft throttle; retry.
+			return true, fmt.Errorf("empty response body: %s", snippet(raw))
+		}
+		return false, json.Unmarshal(gr.Data, out)
 	}
-	return nil
+	return false, nil
 }
 
 // ── types ──────────────────────────────────────────────────────────────────
@@ -218,11 +294,13 @@ query Search($query: String!) {
   }
 }`
 
+const queryMe = `query { me { id } }`
+
 const queryGetUserBook = `
 query GetUserBook($book_id: Int!) {
   user_books(where: {book_id: {_eq: $book_id}}, limit: 1) {
     id status_id
-    user_book_reads(where: {finished_at: {_is_null: true}}, order_by: {created_at: desc}, limit: 1) {
+    user_book_reads(where: {finished_at: {_is_null: true}}, order_by: {id: desc}, limit: 1) {
       id progress_seconds
     }
   }
@@ -309,19 +387,30 @@ func (c *Client) SearchByTitleAuthor(ctx context.Context, title, author string) 
 		return nil, fmt.Errorf("search: %s", *data.Search.Error)
 	}
 
-	var hits []struct {
-		ID int64 `json:"id"`
+	// Hardcover's search returns a Typesense response object, not a flat list:
+	// {"found": N, "hits": [{"document": {"id": "<book_id>", ...}}, ...]}.
+	// Note: document.id comes back as a STRING, so parse it, don't decode to int.
+	var results struct {
+		Hits []struct {
+			Document struct {
+				ID string `json:"id"`
+			} `json:"document"`
+		} `json:"hits"`
 	}
-	if err := json.Unmarshal(data.Search.Results, &hits); err != nil {
+	if err := json.Unmarshal(data.Search.Results, &results); err != nil {
 		return nil, fmt.Errorf("parse search results: %w", err)
 	}
 
 	var out []Edition
-	for _, h := range hits {
+	for _, h := range results.Hits {
 		if len(out) >= 5 {
 			break
 		}
-		editions, err := c.GetEditionsByBookID(ctx, h.ID)
+		bookID, err := strconv.ParseInt(h.Document.ID, 10, 64)
+		if err != nil {
+			continue
+		}
+		editions, err := c.GetEditionsByBookID(ctx, bookID)
 		if err != nil {
 			continue
 		}
@@ -500,8 +589,8 @@ func (u UserBookSummary) Title() string {
 }
 
 const queryGetMyUserBooks = `
-query GetMyUserBooks($limit: Int!, $offset: Int!) {
-  user_books(limit: $limit, offset: $offset, order_by: {created_at: desc}) {
+query GetMyUserBooks($user_id: Int!, $limit: Int!, $offset: Int!) {
+  user_books(where: {user_id: {_eq: $user_id}}, limit: $limit, offset: $offset, order_by: {created_at: desc}) {
     id
     status_id
     book_id
@@ -518,16 +607,39 @@ query GetMyUserBooks($limit: Int!, $offset: Int!) {
         contributions(limit: 1) { author { name } }
       }
     }
-    user_book_reads(where: {finished_at: {_is_null: true}}, order_by: {created_at: desc}, limit: 1) {
+    user_book_reads(where: {finished_at: {_is_null: true}}, order_by: {id: desc}, limit: 1) {
       id
       progress_seconds
     }
   }
 }`
 
+// CurrentUserID returns the authenticated user's Hardcover ID. The user_books
+// table is globally readable, so every "my library" query MUST filter by this —
+// without it, queries return other users' shelves.
+func (c *Client) CurrentUserID(ctx context.Context) (int64, error) {
+	var data struct {
+		Me []struct {
+			ID int64 `json:"id"`
+		} `json:"me"`
+	}
+	if err := c.do(ctx, queryMe, nil, &data); err != nil {
+		return 0, err
+	}
+	if len(data.Me) == 0 {
+		return 0, fmt.Errorf("no authenticated user (check HARDCOVER_TOKEN)")
+	}
+	return data.Me[0].ID, nil
+}
+
 // GetMyUserBooks returns all books in the authenticated user's Hardcover library,
 // paginating automatically.
 func (c *Client) GetMyUserBooks(ctx context.Context) ([]UserBookSummary, error) {
+	userID, err := c.CurrentUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("current user: %w", err)
+	}
+
 	const limit = 250
 	var all []UserBookSummary
 	offset := 0
@@ -537,7 +649,7 @@ func (c *Client) GetMyUserBooks(ctx context.Context) ([]UserBookSummary, error) 
 			UserBooks []UserBookSummary `json:"user_books"`
 		}
 		if err := c.do(ctx, queryGetMyUserBooks, map[string]any{
-			"limit": limit, "offset": offset,
+			"user_id": userID, "limit": limit, "offset": offset,
 		}, &data); err != nil {
 			return nil, err
 		}
