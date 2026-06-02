@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -179,6 +180,7 @@ type contributionField struct {
 type BookInfo struct {
 	ID            int64               `json:"id"`
 	Title         string              `json:"title"`
+	Slug          string              `json:"slug"`
 	Contributions []contributionField `json:"contributions"`
 }
 
@@ -231,6 +233,13 @@ func (e Edition) DisplayTitle() string {
 	return ""
 }
 
+func (e Edition) BookSlug() string {
+	if e.Book != nil {
+		return e.Book.Slug
+	}
+	return ""
+}
+
 func (e Edition) YearStr() string {
 	if e.ReleaseYear > 0 {
 		return fmt.Sprintf("%d", e.ReleaseYear)
@@ -252,7 +261,7 @@ const editionFields = `
   image { url }
   publisher { name }
   book {
-    id title
+    id title slug
     contributions(limit: 1) { author { name } }
   }
 `
@@ -297,8 +306,8 @@ query Search($query: String!) {
 const queryMe = `query { me { id } }`
 
 const queryGetUserBook = `
-query GetUserBook($book_id: Int!) {
-  user_books(where: {book_id: {_eq: $book_id}}, limit: 1) {
+query GetUserBook($book_id: Int!, $user_id: Int!) {
+  user_books(where: {book_id: {_eq: $book_id}, user_id: {_eq: $user_id}}, limit: 1) {
     id status_id
     user_book_reads(where: {finished_at: {_is_null: true}}, order_by: {id: desc}, limit: 1) {
       id progress_seconds
@@ -461,7 +470,11 @@ func (c *Client) GetUserBook(ctx context.Context, bookID int64) (*UserBookResult
 			} `json:"user_book_reads"`
 		} `json:"user_books"`
 	}
-	if err := c.do(ctx, queryGetUserBook, map[string]any{"book_id": bookID}, &data); err != nil {
+	userID, err := c.CurrentUserID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("current user: %w", err)
+	}
+	if err := c.do(ctx, queryGetUserBook, map[string]any{"book_id": bookID, "user_id": userID}, &data); err != nil {
 		return nil, err
 	}
 	if len(data.UserBooks) == 0 {
@@ -508,7 +521,7 @@ func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID i
 	readInput := map[string]any{
 		"edition_id":       editionID,
 		"started_at":       startedAt.Format("2006-01-02"),
-		"progress_seconds": progressSeconds,
+		"progress_seconds": int64(math.Round(progressSeconds)),
 	}
 	if finishedAt != nil {
 		readInput["finished_at"] = finishedAt.Format("2006-01-02")
@@ -525,14 +538,17 @@ func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID i
 	return data.InsertUserBookRead.ID, nil
 }
 
-func (c *Client) UpdateUserBookRead(ctx context.Context, readID int64, progressSeconds float64, finishedAt *time.Time) error {
+func (c *Client) UpdateUserBookRead(ctx context.Context, readID int64, startedAt time.Time, progressSeconds float64, finishedAt *time.Time) error {
 	var data struct {
 		UpdateUserBookRead struct {
 			ID    int64   `json:"id"`
 			Error *string `json:"error"`
 		} `json:"update_user_book_read"`
 	}
-	obj := map[string]any{"progress_seconds": progressSeconds}
+	obj := map[string]any{
+		"started_at":       startedAt.Format("2006-01-02"),
+		"progress_seconds": int64(math.Round(progressSeconds)),
+	}
 	if finishedAt != nil {
 		obj["finished_at"] = finishedAt.Format("2006-01-02")
 	}

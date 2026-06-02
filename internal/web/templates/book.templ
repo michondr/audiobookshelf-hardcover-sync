@@ -46,6 +46,27 @@ templ BookCard(book db.Book) {
 					target="_blank"
 					rel="noopener"
 				>Open in ABS</a>
+				if progressDiffers(book) {
+					<div class="hc-actions">
+						<button
+							class="btn btn-sm btn-primary"
+							hx-post={ fmt.Sprintf("/book/%d/sync-progress", book.ID) }
+							hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+							hx-swap="outerHTML"
+							hx-indicator="#sync-spinner"
+							title="Update the latest Hardcover read with the current ABS progress"
+						>⤴ Sync progress to HC</button>
+						<button
+							class="btn btn-sm btn-secondary"
+							hx-post={ fmt.Sprintf("/book/%d/reread", book.ID) }
+							hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+							hx-swap="outerHTML"
+							hx-indicator="#sync-spinner"
+							hx-confirm="Start a brand-new Hardcover read with the current ABS progress?"
+							title="Always create a new read on Hardcover with the current progress"
+						>＋ Add as new reread</button>
+					</div>
+				}
 			</div>
 		</div>
 		@hcSection(book)
@@ -105,10 +126,22 @@ templ hcMatched(book db.Book) {
 						</div>
 					}
 					<div class="dates-row">{ candidateMeta(*e) }</div>
+					<a
+						class="ext-link"
+						href={ templ.SafeURL(hcBookURL(book)) }
+						target="_blank"
+						rel="noopener"
+					>Open in Hardcover</a>
 				</div>
 			</div>
 		} else if info := hcEditionInfo(book); info != "" {
 			<span class="hc-edition-info">{ info }</span>
+			<a
+				class="ext-link"
+				href={ templ.SafeURL(hcBookURL(book)) }
+				target="_blank"
+				rel="noopener"
+			>Open in Hardcover</a>
 		}
 		<div class="hc-foot">
 			<span class="hc-status hc-status-matched">✓ Matched</span>

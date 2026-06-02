@@ -189,6 +189,78 @@ func (s *Service) RefreshHCProgress(ctx context.Context) error {
 	return nil
 }
 
+// PushProgress writes a single matched book's current ABS progress to
+// Hardcover. With reread=false it updates the most recent read in place
+// (creating one only if the book has none yet); with reread=true it always
+// inserts a fresh read. The read's started_at mirrors the ABS start date so
+// Hardcover reflects when the listen actually began, and the book's status is
+// set to Read/Currently-reading from the ABS finished flag.
+func (s *Service) PushProgress(ctx context.Context, bookID int64, reread bool) error {
+	book, err := s.db.GetBook(ctx, bookID)
+	if err != nil {
+		return fmt.Errorf("get book: %w", err)
+	}
+	if book.HCBookID == nil || book.HCEditionID == nil {
+		return fmt.Errorf("book is not matched to a Hardcover edition")
+	}
+
+	startedAt := time.Now()
+	if book.ABSStartedAt != nil {
+		startedAt = *book.ABSStartedAt
+	}
+	status := hardcover.StatusCurrentlyReading
+	var finishedAt *time.Time
+	if book.ABSIsFinished {
+		status = hardcover.StatusRead
+		if book.ABSFinishedAt != nil {
+			finishedAt = book.ABSFinishedAt
+		} else {
+			now := time.Now()
+			finishedAt = &now
+		}
+	}
+	progress := book.ABSCurrentSeconds
+
+	// A read has to hang off a user_book, so make sure one exists first.
+	ub, err := s.hc.GetUserBook(ctx, *book.HCBookID)
+	if err != nil {
+		return fmt.Errorf("get user_book: %w", err)
+	}
+	var userBookID int64
+	var lastReadID *int64
+	if ub == nil {
+		userBookID, err = s.hc.InsertUserBook(ctx, *book.HCBookID, *book.HCEditionID, status)
+		if err != nil {
+			return fmt.Errorf("insert user_book: %w", err)
+		}
+	} else {
+		userBookID = ub.ID
+		lastReadID = ub.ReadID
+	}
+
+	if reread || lastReadID == nil {
+		if _, err := s.hc.InsertUserBookRead(ctx, userBookID, *book.HCEditionID, startedAt, progress, finishedAt); err != nil {
+			return fmt.Errorf("insert read: %w", err)
+		}
+	} else {
+		if err := s.hc.UpdateUserBookRead(ctx, *lastReadID, startedAt, progress, finishedAt); err != nil {
+			return fmt.Errorf("update read: %w", err)
+		}
+	}
+
+	if err := s.hc.UpdateUserBookStatus(ctx, userBookID, status); err != nil {
+		s.log.Warn("update HC status", "book_id", bookID, "err", err)
+	}
+
+	// Reflect what we just pushed locally so the card stops flagging drift.
+	if err := s.db.UpdateHCProgress(ctx, bookID, progress, book.ABSIsFinished); err != nil {
+		s.log.Warn("update local HC progress", "book_id", bookID, "err", err)
+	}
+	s.log.Info("pushed progress to HC",
+		"book_id", bookID, "reread", reread, "seconds", progress, "finished", book.ABSIsFinished)
+	return nil
+}
+
 // libraryIndex indexes the user's existing Hardcover library for fast lookup
 // while matching ABS books.
 type libraryIndex struct {
@@ -325,6 +397,7 @@ func editionToCandidate(e hardcover.Edition) db.CandidateEdition {
 		ImageURL:  e.ImageURL(),
 		ISBN13:    e.ISBN13,
 		ASIN:      e.ASIN,
+		Slug:      e.BookSlug(),
 	}
 }
 

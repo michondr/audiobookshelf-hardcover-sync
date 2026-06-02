@@ -315,6 +315,14 @@ details[open] .section-chevron { transform: rotate(90deg); }
 /* highlight HC progress text when it has drifted from ABS */
 .progress-text-warn { color: var(--danger); font-weight: 600; }
 
+/* ── matched action buttons (sync progress / reread) ── */
+.hc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  width: 100%;
+}
+
 /* ── status footer (matched / ignored) ── */
 .hc-foot {
   display: flex;

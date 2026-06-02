@@ -155,6 +155,16 @@ func candidateMeta(c db.CandidateEdition) string {
 	return strings.Join(parts, " · ")
 }
 
+// hcBookURL deep-links to the exact matched edition on Hardcover. The slug is
+// cached on the edition for books matched since slug fetching was added; older
+// matches (no slug) gracefully fall back to a Hardcover search.
+func hcBookURL(book db.Book) string {
+	if e := book.ParsedEdition(); e != nil && e.Slug != "" && e.ID > 0 {
+		return fmt.Sprintf("https://hardcover.app/books/%s/editions/%d", e.Slug, e.ID)
+	}
+	return hcSearchURL(book.ABSTitle, book.ABSAuthor)
+}
+
 func hcSearchURL(title, author string) string {
 	q := title
 	if author != "" {

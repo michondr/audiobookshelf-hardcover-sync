@@ -9,7 +9,7 @@ import (
 templ Index(books []db.Book, nextSync string) {
 	@Layout(nextSync) {
 		if len(books) == 0 {
-			<p class="empty-state">No books yet — hit Sync Now to load your library.</p>
+			<p class="empty-state">No books yet — hit Refresh from ABS to load your library.</p>
 		} else {
 			@bookSections(groupBooks(books))
 		}

@@ -134,6 +134,7 @@ type CandidateEdition struct {
 	ImageURL  string `json:"image_url"`
 	ISBN13    string `json:"isbn_13"`
 	ASIN      string `json:"asin"`
+	Slug      string `json:"slug"`
 }
 
 func (c CandidateEdition) FormatName() string {

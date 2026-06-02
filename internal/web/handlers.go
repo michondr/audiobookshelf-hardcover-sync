@@ -142,11 +142,40 @@ func (h *handler) handleSetEdition(w http.ResponseWriter, r *http.Request) {
 		ImageURL:  edition.ImageURL(),
 		ISBN13:    edition.ISBN13,
 		ASIN:      edition.ASIN,
+		Slug:      edition.BookSlug(),
 	}
 
 	if err := h.db.SetHCEdition(r.Context(), id, candidate); err != nil {
 		h.log.Error("set edition in db", "id", id, "err", err)
 		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+
+	h.renderBookCard(w, r, id)
+}
+
+// handleSyncProgress updates the book's most recent Hardcover read with the
+// current ABS progress. handleAddReread always starts a fresh read instead.
+// Both re-render the card; on error they return a non-2xx so HTMX leaves the
+// existing card untouched.
+func (h *handler) handleSyncProgress(w http.ResponseWriter, r *http.Request) {
+	h.pushProgress(w, r, false)
+}
+
+func (h *handler) handleAddReread(w http.ResponseWriter, r *http.Request) {
+	h.pushProgress(w, r, true)
+}
+
+func (h *handler) pushProgress(w http.ResponseWriter, r *http.Request, reread bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.sync.PushProgress(r.Context(), id, reread); err != nil {
+		h.log.Error("push progress to HC", "id", id, "reread", reread, "err", err)
+		http.Error(w, "Hardcover update failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
