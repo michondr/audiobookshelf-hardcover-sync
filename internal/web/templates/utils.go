@@ -10,10 +10,24 @@ import (
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
 )
 
-// progressTolerance is how far (in seconds) ABS and Hardcover progress may drift
-// before we consider them out of sync. Keeps tiny rounding differences from
-// flagging an otherwise-synced book.
-const progressTolerance = 60.0
+// Progress-comparison tolerance. The matched Hardcover edition is often a
+// slightly different recording than the ABS file, so the same listening spot
+// maps to second offsets that diverge proportionally to how far in you are — a
+// flat threshold flags long books that are really in the same place. So the
+// tolerance scales with book length, with a floor to keep short books sane.
+const (
+	progressToleranceFloor    = 120.0 // 2 minutes
+	progressToleranceFraction = 0.01  // or 1% of the audiobook's length, whichever is larger
+)
+
+// progressTolerance returns how far (in seconds) ABS and Hardcover progress may
+// drift for a given book before we consider it out of sync.
+func progressTolerance(b db.Book) float64 {
+	if t := b.ABSTotalSeconds * progressToleranceFraction; t > progressToleranceFloor {
+		return t
+	}
+	return progressToleranceFloor
+}
 
 // BookGroups splits a flat book list into the display categories.
 type BookGroups struct {
@@ -77,7 +91,7 @@ func progressDiffers(b db.Book) bool {
 	if b.ABSIsFinished {
 		return false
 	}
-	return math.Abs(b.ABSCurrentSeconds-b.HCCurrentSeconds) > progressTolerance
+	return math.Abs(b.ABSCurrentSeconds-b.HCCurrentSeconds) > progressTolerance(b)
 }
 
 func formatDate(t *time.Time) string {
