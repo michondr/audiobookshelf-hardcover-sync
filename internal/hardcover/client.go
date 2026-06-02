@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ const (
 	StatusWantToRead       = 1
 	StatusCurrentlyReading = 2
 	StatusRead             = 3
+	StatusDidNotFinish     = 5
 	FormatAudiobook        = 2
 	FormatEbook            = 4
 )
@@ -199,6 +199,7 @@ type Edition struct {
 	ASIN            string          `json:"asin"`
 	ReadingFormatID int             `json:"reading_format_id"`
 	AudioSeconds    int             `json:"audio_seconds"`
+	Pages           int             `json:"pages"`
 	ReleaseYear     int             `json:"release_year"`
 	Image           *imageField     `json:"image"`
 	Publisher       *publisherField `json:"publisher"`
@@ -257,7 +258,7 @@ func (e Edition) FormatName() string {
 // ── queries ────────────────────────────────────────────────────────────────
 
 const editionFields = `
-  id book_id isbn_13 isbn_10 asin reading_format_id audio_seconds release_year
+  id book_id isbn_13 isbn_10 asin reading_format_id audio_seconds pages release_year
   image { url }
   publisher { name }
   book {
@@ -511,7 +512,27 @@ func (c *Client) InsertUserBook(ctx context.Context, bookID, editionID int64, st
 	return data.InsertUserBook.ID, nil
 }
 
-func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID int64, startedAt time.Time, progressSeconds float64, finishedAt *time.Time) (int64, error) {
+// ReadProgress is the progress to record on a read, in the unit that matches the
+// edition: audiobook editions use Seconds, physical/ebook editions use Pages.
+// Exactly one is expected to be non-zero; Hardcover stores them mutually
+// exclusively (setting one clears the other).
+type ReadProgress struct {
+	Seconds int
+	Pages   int
+}
+
+func (p ReadProgress) isZero() bool { return p.Seconds <= 0 && p.Pages <= 0 }
+
+// apply writes whichever progress unit is set into a DatesReadInput map.
+func (p ReadProgress) apply(input map[string]any) {
+	if p.Pages > 0 {
+		input["progress_pages"] = p.Pages
+	} else {
+		input["progress_seconds"] = p.Seconds
+	}
+}
+
+func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID int64, startedAt time.Time, progress ReadProgress, finishedAt *time.Time) (int64, error) {
 	var data struct {
 		InsertUserBookRead struct {
 			ID    int64   `json:"id"`
@@ -519,10 +540,10 @@ func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID i
 		} `json:"insert_user_book_read"`
 	}
 	readInput := map[string]any{
-		"edition_id":       editionID,
-		"started_at":       startedAt.Format("2006-01-02"),
-		"progress_seconds": int64(math.Round(progressSeconds)),
+		"edition_id": editionID,
+		"started_at": startedAt.Format("2006-01-02"),
 	}
+	progress.apply(readInput)
 	if finishedAt != nil {
 		readInput["finished_at"] = finishedAt.Format("2006-01-02")
 	}
@@ -535,10 +556,20 @@ func (c *Client) InsertUserBookRead(ctx context.Context, userBookID, editionID i
 	if data.InsertUserBookRead.Error != nil && *data.InsertUserBookRead.Error != "" {
 		return 0, fmt.Errorf("insert_user_book_read: %s", *data.InsertUserBookRead.Error)
 	}
-	return data.InsertUserBookRead.ID, nil
+	readID := data.InsertUserBookRead.ID
+
+	// Hardcover's insert silently drops the progress for an in-progress read
+	// (finished_at == null) — only finished reads keep it on insert. So for an
+	// unfinished read, set the progress with a follow-up update, which honors it.
+	if readID != 0 && finishedAt == nil && !progress.isZero() {
+		if err := c.UpdateUserBookRead(ctx, readID, startedAt, progress, nil); err != nil {
+			return readID, fmt.Errorf("set progress on new read: %w", err)
+		}
+	}
+	return readID, nil
 }
 
-func (c *Client) UpdateUserBookRead(ctx context.Context, readID int64, startedAt time.Time, progressSeconds float64, finishedAt *time.Time) error {
+func (c *Client) UpdateUserBookRead(ctx context.Context, readID int64, startedAt time.Time, progress ReadProgress, finishedAt *time.Time) error {
 	var data struct {
 		UpdateUserBookRead struct {
 			ID    int64   `json:"id"`
@@ -546,9 +577,9 @@ func (c *Client) UpdateUserBookRead(ctx context.Context, readID int64, startedAt
 		} `json:"update_user_book_read"`
 	}
 	obj := map[string]any{
-		"started_at":       startedAt.Format("2006-01-02"),
-		"progress_seconds": int64(math.Round(progressSeconds)),
+		"started_at": startedAt.Format("2006-01-02"),
 	}
+	progress.apply(obj)
 	if finishedAt != nil {
 		obj["finished_at"] = finishedAt.Format("2006-01-02")
 	}

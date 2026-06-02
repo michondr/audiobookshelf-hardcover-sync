@@ -24,6 +24,12 @@ templ bookSections(g BookGroups) {
 	if len(g.Matched) > 0 {
 		@bookSection("Matched", "success", false, g.Matched)
 	}
+	if len(g.DNF) > 0 {
+		@bookSection("Did not finish", "warning", true, g.DNF)
+	}
+	if len(g.Finished) > 0 {
+		@bookSection("Finished", "muted", true, g.Finished)
+	}
 	if len(g.Pending) > 0 {
 		@bookSection("Pending match", "info", false, g.Pending)
 	}

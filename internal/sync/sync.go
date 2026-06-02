@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -177,12 +178,13 @@ func (s *Service) RefreshHCProgress(ctx context.Context) error {
 			continue
 		}
 		var seconds float64
-		var finished bool
+		var finished, dnf bool
 		if ub, ok := byBook[*book.HCBookID]; ok {
 			finished = ub.StatusID == hardcover.StatusRead
+			dnf = ub.StatusID == hardcover.StatusDidNotFinish
 			seconds = ub.ActiveReadProgress()
 		}
-		if err := s.db.UpdateHCProgress(ctx, book.ID, seconds, finished); err != nil {
+		if err := s.db.UpdateHCProgress(ctx, book.ID, seconds, finished, dnf); err != nil {
 			s.log.Error("update HC progress", "book_id", book.ID, "err", err)
 		}
 	}
@@ -219,7 +221,14 @@ func (s *Service) PushProgress(ctx context.Context, bookID int64, reread bool) e
 			finishedAt = &now
 		}
 	}
-	progress := book.ABSCurrentSeconds
+	// Record progress in the unit the matched edition uses: audiobook editions
+	// track seconds, but if a book only has a physical/ebook edition on Hardcover
+	// (no audiobook), Hardcover shows seconds as 0% — it needs pages there. So map
+	// the ABS listening fraction onto the edition's page count for those.
+	progress, err := s.progressForEdition(ctx, book)
+	if err != nil {
+		return fmt.Errorf("resolve edition progress: %w", err)
+	}
 
 	// A read has to hang off a user_book, so make sure one exists first.
 	ub, err := s.hc.GetUserBook(ctx, *book.HCBookID)
@@ -252,12 +261,86 @@ func (s *Service) PushProgress(ctx context.Context, bookID int64, reread bool) e
 		s.log.Warn("update HC status", "book_id", bookID, "err", err)
 	}
 
-	// Reflect what we just pushed locally so the card stops flagging drift.
-	if err := s.db.UpdateHCProgress(ctx, bookID, progress, book.ABSIsFinished); err != nil {
+	// Reflect what we just pushed locally so the card stops flagging drift. Drift
+	// is tracked in ABS seconds regardless of the unit pushed to Hardcover.
+	// Pushing real progress means the book is being read again, not DNF.
+	if err := s.db.UpdateHCProgress(ctx, bookID, book.ABSCurrentSeconds, book.ABSIsFinished, false); err != nil {
 		s.log.Warn("update local HC progress", "book_id", bookID, "err", err)
 	}
 	s.log.Info("pushed progress to HC",
-		"book_id", bookID, "reread", reread, "seconds", progress, "finished", book.ABSIsFinished)
+		"book_id", bookID, "reread", reread, "progress", progress, "finished", book.ABSIsFinished)
+	return nil
+}
+
+// progressForEdition maps the book's current ABS progress onto the unit the
+// matched Hardcover edition uses. Audiobook editions take seconds; editions with
+// no audio length but a page count (physical/ebook) take a page count scaled by
+// how far through the ABS audiobook the listener is.
+func (s *Service) progressForEdition(ctx context.Context, book db.Book) (hardcover.ReadProgress, error) {
+	seconds := hardcover.ReadProgress{Seconds: int(math.Round(book.ABSCurrentSeconds))}
+	if book.HCEditionID == nil {
+		return seconds, nil
+	}
+	ed, err := s.hc.GetEdition(ctx, *book.HCEditionID)
+	if err != nil {
+		return hardcover.ReadProgress{}, err
+	}
+	// Audiobook (or any edition that reports an audio length): use seconds.
+	if ed.AudioSeconds > 0 || ed.ReadingFormatID == hardcover.FormatAudiobook {
+		return seconds, nil
+	}
+	// Page-based edition: scale the ABS listening fraction onto its pages.
+	if ed.Pages > 0 && book.ABSTotalSeconds > 0 {
+		frac := book.ABSCurrentSeconds / book.ABSTotalSeconds
+		if frac > 1 {
+			frac = 1
+		}
+		pages := int(math.Round(frac * float64(ed.Pages)))
+		if pages < 1 && book.ABSCurrentSeconds > 0 {
+			pages = 1 // some progress shouldn't round down to "not started"
+		}
+		return hardcover.ReadProgress{Pages: pages}, nil
+	}
+	// No usable page count — fall back to seconds (better than nothing).
+	return seconds, nil
+}
+
+// MarkDNF flags a matched book as "Did Not Finish" on Hardcover, setting the
+// user_book status accordingly (creating the user_book first if needed) and
+// recording the DNF state locally so the UI can surface it in its own category.
+func (s *Service) MarkDNF(ctx context.Context, bookID int64) error {
+	book, err := s.db.GetBook(ctx, bookID)
+	if err != nil {
+		return fmt.Errorf("get book: %w", err)
+	}
+	if book.HCBookID == nil || book.HCEditionID == nil {
+		return fmt.Errorf("book is not matched to a Hardcover edition")
+	}
+
+	// A status has to hang off a user_book, so make sure one exists first.
+	ub, err := s.hc.GetUserBook(ctx, *book.HCBookID)
+	if err != nil {
+		return fmt.Errorf("get user_book: %w", err)
+	}
+	var userBookID int64
+	if ub == nil {
+		userBookID, err = s.hc.InsertUserBook(ctx, *book.HCBookID, *book.HCEditionID, hardcover.StatusDidNotFinish)
+		if err != nil {
+			return fmt.Errorf("insert user_book: %w", err)
+		}
+	} else {
+		userBookID = ub.ID
+	}
+
+	if err := s.hc.UpdateUserBookStatus(ctx, userBookID, hardcover.StatusDidNotFinish); err != nil {
+		return fmt.Errorf("set DNF status: %w", err)
+	}
+
+	// Keep the recorded progress, but flag the book as DNF locally.
+	if err := s.db.UpdateHCProgress(ctx, bookID, book.ABSCurrentSeconds, false, true); err != nil {
+		s.log.Warn("update local DNF state", "book_id", bookID, "err", err)
+	}
+	s.log.Info("marked DNF on HC", "book_id", bookID)
 	return nil
 }
 

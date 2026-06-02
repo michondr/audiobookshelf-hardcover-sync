@@ -46,6 +46,7 @@ func NewServer(
 	mux.HandleFunc("POST /book/{id}/set-edition", h.handleSetEdition)
 	mux.HandleFunc("POST /book/{id}/sync-progress", h.handleSyncProgress)
 	mux.HandleFunc("POST /book/{id}/reread", h.handleAddReread)
+	mux.HandleFunc("POST /book/{id}/dnf", h.handleMarkDNF)
 	mux.HandleFunc("POST /book/{id}/unmatch", h.handleUnmatchBook)
 	mux.HandleFunc("POST /book/{id}/ignore", h.handleIgnoreBook)
 	mux.HandleFunc("POST /book/{id}/unignore", h.handleUnignoreBook)

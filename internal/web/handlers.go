@@ -182,6 +182,23 @@ func (h *handler) pushProgress(w http.ResponseWriter, r *http.Request, reread bo
 	h.renderBookCard(w, r, id)
 }
 
+// handleMarkDNF flags a still-in-progress book as "Did Not Finish" on Hardcover.
+func (h *handler) handleMarkDNF(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid id", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.sync.MarkDNF(r.Context(), id); err != nil {
+		h.log.Error("mark DNF on HC", "id", id, "err", err)
+		http.Error(w, "Hardcover update failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	h.renderBookCard(w, r, id)
+}
+
 func (h *handler) handleIgnoreBook(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

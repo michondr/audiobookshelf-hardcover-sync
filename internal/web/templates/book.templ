@@ -46,25 +46,38 @@ templ BookCard(book db.Book) {
 					target="_blank"
 					rel="noopener"
 				>Open in ABS</a>
-				if progressDiffers(book) {
+				if progressDiffers(book) || canMarkDNF(book) {
 					<div class="hc-actions">
-						<button
-							class="btn btn-sm btn-primary"
-							hx-post={ fmt.Sprintf("/book/%d/sync-progress", book.ID) }
-							hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-							hx-swap="outerHTML"
-							hx-indicator="#sync-spinner"
-							title="Update the latest Hardcover read with the current ABS progress"
-						>⤴ Sync progress to HC</button>
-						<button
-							class="btn btn-sm btn-secondary"
-							hx-post={ fmt.Sprintf("/book/%d/reread", book.ID) }
-							hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-							hx-swap="outerHTML"
-							hx-indicator="#sync-spinner"
-							hx-confirm="Start a brand-new Hardcover read with the current ABS progress?"
-							title="Always create a new read on Hardcover with the current progress"
-						>＋ Add as new reread</button>
+						if progressDiffers(book) {
+							<button
+								class="btn btn-sm btn-primary"
+								hx-post={ fmt.Sprintf("/book/%d/sync-progress", book.ID) }
+								hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+								hx-swap="outerHTML"
+								hx-indicator="#sync-spinner"
+								title="Update the latest Hardcover read with the current ABS progress"
+							>⤴ Sync progress to HC</button>
+							<button
+								class="btn btn-sm btn-secondary"
+								hx-post={ fmt.Sprintf("/book/%d/reread", book.ID) }
+								hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+								hx-swap="outerHTML"
+								hx-indicator="#sync-spinner"
+								hx-confirm="Start a brand-new Hardcover read with the current ABS progress?"
+								title="Always create a new read on Hardcover with the current progress"
+							>＋ New reread</button>
+						}
+						if canMarkDNF(book) {
+							<button
+								class="btn btn-sm btn-warning"
+								hx-post={ fmt.Sprintf("/book/%d/dnf", book.ID) }
+								hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+								hx-swap="outerHTML"
+								hx-indicator="#sync-spinner"
+								hx-confirm="Mark this book as 'Did not finish' on Hardcover?"
+								title="Mark this book as Did Not Finish on Hardcover"
+							>✕ Did not finish</button>
+						}
 					</div>
 				}
 			</div>

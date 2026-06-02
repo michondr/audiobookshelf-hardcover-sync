@@ -13,6 +13,8 @@
   --success-dim: #14532d;
   --danger: #f87171;
   --danger-dim: #7f1d1d;
+  --warning: #f59e0b;
+  --warning-dim: #78350f;
   --radius: 10px;
   --shadow: 0 1px 4px rgba(0,0,0,.4), 0 0 0 1px rgba(0,0,0,.3);
 }
@@ -52,7 +54,7 @@ body {
 .header-meta { font-size: 0.8rem; color: var(--text-muted); }
 
 /* ── layout ── */
-.content { max-width: 900px; margin: 0 auto; padding: 1.5rem; }
+.content { max-width: 1080px; margin: 0 auto; padding: 1.5rem; }
 
 /* ── toast ── */
 #sync-toast { position: fixed; top: 64px; right: 1.5rem; z-index: 30; }
@@ -253,8 +255,8 @@ details[open] .section-chevron { transform: rotate(90deg); }
   align-items: flex-start;
   justify-content: center;
   gap: 0.5rem;
-  width: 340px;
-  min-width: 340px;
+  flex: 1 1 0;
+  min-width: 0;
   padding: 0.85rem 1.1rem;
   border-left: 1px solid var(--border);
   background: var(--bg);
@@ -422,3 +424,5 @@ details[open] .section-chevron { transform: rotate(90deg); }
 .btn-secondary:hover { background: var(--surface-hover); }
 .btn-ghost { background: transparent; color: var(--text-muted); }
 .btn-ghost:hover { background: var(--bg); }
+.btn-warning { background: var(--warning); color: #1a1206; }
+.btn-warning:hover { background: #d97706; }

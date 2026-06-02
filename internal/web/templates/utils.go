@@ -33,7 +33,9 @@ func progressTolerance(b db.Book) float64 {
 type BookGroups struct {
 	ProgressDiffers []db.Book // matched, but ABS progress has drifted from Hardcover
 	NeedsAction     []db.Book // searched but no auto-match: candidates to pick or manual input needed
-	Matched         []db.Book // confirmed edition, progress in sync
+	Matched         []db.Book // confirmed edition, progress in sync, still in progress
+	DNF             []db.Book // marked "did not finish" on Hardcover
+	Finished        []db.Book // matched and finished on both ABS and Hardcover
 	Pending         []db.Book // not yet searched
 	Ignored         []db.Book
 }
@@ -45,9 +47,14 @@ func groupBooks(books []db.Book) BookGroups {
 		case b.HCIgnored:
 			g.Ignored = append(g.Ignored, b)
 		case b.HCEditionID != nil:
-			if progressDiffers(b) {
+			switch {
+			case b.HCDNF:
+				g.DNF = append(g.DNF, b)
+			case progressDiffers(b):
 				g.ProgressDiffers = append(g.ProgressDiffers, b)
-			} else {
+			case b.ABSIsFinished && b.HCIsFinished:
+				g.Finished = append(g.Finished, b)
+			default:
 				g.Matched = append(g.Matched, b)
 			}
 		case b.HCMatchSearchedAt != nil:
@@ -63,7 +70,26 @@ func groupBooks(books []db.Book) BookGroups {
 		return lastSeenAfter(g.ProgressDiffers[i].ABSLastSeenAt, g.ProgressDiffers[j].ABSLastSeenAt)
 	})
 
+	// Order matched/finished books by when reading started, falling back to when
+	// the book was added to ABS when there's no start date — most recent first.
+	sortByStarted := func(s []db.Book) {
+		sort.SliceStable(s, func(i, j int) bool {
+			return lastSeenAfter(startedOrAdded(s[i]), startedOrAdded(s[j]))
+		})
+	}
+	sortByStarted(g.Matched)
+	sortByStarted(g.Finished)
+
 	return g
+}
+
+// startedOrAdded returns the date used to order matched books: the ABS start
+// date, or the date the book was added to ABS when reading never started.
+func startedOrAdded(b db.Book) *time.Time {
+	if b.ABSStartedAt != nil {
+		return b.ABSStartedAt
+	}
+	return b.ABSAddedAt
 }
 
 // lastSeenAfter reports whether a is more recent than b, treating nil as the
@@ -92,6 +118,13 @@ func progressDiffers(b db.Book) bool {
 		return false
 	}
 	return math.Abs(b.ABSCurrentSeconds-b.HCCurrentSeconds) > progressTolerance(b)
+}
+
+// canMarkDNF reports whether the "Did not finish" action applies: the book is
+// matched to a Hardcover edition, still in progress on ABS (not finished, with
+// some progress), and not already flagged as DNF.
+func canMarkDNF(b db.Book) bool {
+	return b.HCEditionID != nil && !b.HCDNF && !b.ABSIsFinished && b.ABSCurrentSeconds > 0
 }
 
 func formatDate(t *time.Time) string {
