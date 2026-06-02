@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="b-book" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FB923C"/>
+      <stop offset="1" stop-color="#EA580C"/>
+    </linearGradient>
+    <linearGradient id="b-phones" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FCD34D"/>
+      <stop offset="1" stop-color="#FBBF24"/>
+    </linearGradient>
+  </defs>
+  <!-- headphone band -->
+  <path fill="none" stroke="url(#b-phones)" stroke-width="2.4" stroke-linecap="round" d="M7 18 A 9 9 0 0 1 25 18"/>
+  <!-- ear cups -->
+  <rect x="5"    y="17" width="4" height="6.5" rx="2" fill="url(#b-phones)"/>
+  <rect x="23"   y="17" width="4" height="6.5" rx="2" fill="url(#b-phones)"/>
+
+  <!-- open book below -->
+  <path fill="url(#b-book)" d="M16 20 C13.5 18.4 8.5 18.4 6 19 L6 26 C8.5 25.4 13.5 25.4 16 27 C18.5 25.4 23.5 25.4 26 26 L26 19 C23.5 18.4 18.5 18.4 16 20 Z"/>
+  <path stroke="#9A3412" stroke-width="1" stroke-linecap="round" d="M16 20 L16 27"/>
+</svg>
