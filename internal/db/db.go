@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS books (
 	hc_candidates_json   TEXT    NOT NULL DEFAULT '',
 	hc_edition_data_json TEXT    NOT NULL DEFAULT '',
 	hc_match_searched_at DATETIME,
+	hc_current_seconds   REAL    NOT NULL DEFAULT 0,
+	hc_is_finished       INTEGER NOT NULL DEFAULT 0,
+	hc_progress_synced_at DATETIME,
 	created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	updated_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -60,6 +63,9 @@ var migrations = []string{
 	`ALTER TABLE books ADD COLUMN hc_candidates_json TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE books ADD COLUMN hc_edition_data_json TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE books ADD COLUMN hc_match_searched_at DATETIME`,
+	`ALTER TABLE books ADD COLUMN hc_current_seconds REAL NOT NULL DEFAULT 0`,
+	`ALTER TABLE books ADD COLUMN hc_is_finished INTEGER NOT NULL DEFAULT 0`,
+	`ALTER TABLE books ADD COLUMN hc_progress_synced_at DATETIME`,
 	// one-time cleanup of columns removed in the refactor (no-op once gone)
 	`ALTER TABLE books DROP COLUMN hc_user_book_id`,
 	`ALTER TABLE books DROP COLUMN hc_user_book_read_id`,
@@ -68,7 +74,6 @@ var migrations = []string{
 	`ALTER TABLE books DROP COLUMN hc_edition_year`,
 	`ALTER TABLE books DROP COLUMN hc_edition_format`,
 	`ALTER TABLE books DROP COLUMN hc_edition_image_url`,
-	`ALTER TABLE books DROP COLUMN hc_current_seconds`,
 	`ALTER TABLE books DROP COLUMN status`,
 	`ALTER TABLE books DROP COLUMN last_synced_seconds`,
 	`ALTER TABLE books DROP COLUMN last_synced_is_finished`,
@@ -158,6 +163,9 @@ type Book struct {
 	HCCandidatesJSON    string
 	HCEditionDataJSON   string
 	HCMatchSearchedAt   *time.Time
+	HCCurrentSeconds    float64
+	HCIsFinished        bool
+	HCProgressSyncedAt  *time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -188,6 +196,7 @@ SELECT
 	abs_added_at, abs_total_seconds, abs_current_seconds, abs_is_finished,
 	abs_last_seen_at, abs_started_at, abs_finished_at,
 	hc_edition_id, hc_book_id, hc_ignored, hc_candidates_json, hc_edition_data_json, hc_match_searched_at,
+	hc_current_seconds, hc_is_finished, hc_progress_synced_at,
 	created_at, updated_at
 FROM books
 `
@@ -195,15 +204,16 @@ FROM books
 func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 	var b Book
 	var absAddedAt, absLastSeen, absStartedAt, absFinishedAt sql.NullTime
-	var absIsFinished, hcIgnored int
+	var absIsFinished, hcIgnored, hcIsFinished int
 	var hcEditionID, hcBookID sql.NullInt64
-	var hcMatchSearchedAt sql.NullTime
+	var hcMatchSearchedAt, hcProgressSyncedAt sql.NullTime
 
 	err := row.Scan(
 		&b.ID, &b.ABSItemID, &b.ABSTitle, &b.ABSAuthor, &b.ABSISBN, &b.ABSASIN,
 		&absAddedAt, &b.ABSTotalSeconds, &b.ABSCurrentSeconds, &absIsFinished,
 		&absLastSeen, &absStartedAt, &absFinishedAt,
 		&hcEditionID, &hcBookID, &hcIgnored, &b.HCCandidatesJSON, &b.HCEditionDataJSON, &hcMatchSearchedAt,
+		&b.HCCurrentSeconds, &hcIsFinished, &hcProgressSyncedAt,
 		&b.CreatedAt, &b.UpdatedAt,
 	)
 	if err != nil {
@@ -212,6 +222,7 @@ func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 
 	b.ABSIsFinished = absIsFinished != 0
 	b.HCIgnored = hcIgnored != 0
+	b.HCIsFinished = hcIsFinished != 0
 	if absAddedAt.Valid {
 		b.ABSAddedAt = &absAddedAt.Time
 	}
@@ -232,6 +243,9 @@ func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 	}
 	if hcMatchSearchedAt.Valid {
 		b.HCMatchSearchedAt = &hcMatchSearchedAt.Time
+	}
+	if hcProgressSyncedAt.Valid {
+		b.HCProgressSyncedAt = &hcProgressSyncedAt.Time
 	}
 	return b, nil
 }
@@ -286,6 +300,47 @@ func (d *DB) ListUnmatchedBooks(ctx context.Context) ([]Book, error) {
 	return books, rows.Err()
 }
 
+// ListMatchedBooks returns every book confirmed to a Hardcover edition (and not
+// ignored), so a progress pass can compare ABS vs Hardcover reading progress.
+func (d *DB) ListMatchedBooks(ctx context.Context) ([]Book, error) {
+	rows, err := d.sql.QueryContext(ctx, selectAll+`
+		WHERE hc_edition_id IS NOT NULL
+		  AND hc_ignored = 0
+		ORDER BY abs_added_at DESC, created_at DESC, id DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var books []Book
+	for rows.Next() {
+		b, err := scanBook(rows)
+		if err != nil {
+			return nil, err
+		}
+		books = append(books, b)
+	}
+	return books, rows.Err()
+}
+
+// UpdateHCProgress records the reading progress a matched book currently has on
+// Hardcover, so the UI can flag books whose ABS progress has drifted from it.
+func (d *DB) UpdateHCProgress(ctx context.Context, id int64, currentSeconds float64, isFinished bool) error {
+	fin := 0
+	if isFinished {
+		fin = 1
+	}
+	_, err := d.sql.ExecContext(ctx, `
+		UPDATE books SET
+			hc_current_seconds    = ?,
+			hc_is_finished        = ?,
+			hc_progress_synced_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, currentSeconds, fin, id)
+	return err
+}
+
 func (d *DB) UpsertABSBook(ctx context.Context, absItemID, title, author, isbn, asin string, addedAt time.Time, totalSeconds float64) error {
 	_, err := d.sql.ExecContext(ctx, `
 		INSERT INTO books (abs_item_id, abs_title, abs_author, abs_isbn, abs_asin, abs_added_at, abs_total_seconds)
@@ -322,11 +377,14 @@ func (d *DB) SetHCEdition(ctx context.Context, id int64, e CandidateEdition) err
 	data, _ := json.Marshal(e)
 	_, err := d.sql.ExecContext(ctx, `
 		UPDATE books SET
-			hc_edition_id        = ?,
-			hc_book_id           = ?,
-			hc_edition_data_json = ?,
-			hc_candidates_json   = '',
-			hc_match_searched_at = CURRENT_TIMESTAMP
+			hc_edition_id         = ?,
+			hc_book_id            = ?,
+			hc_edition_data_json  = ?,
+			hc_candidates_json    = '',
+			hc_match_searched_at  = CURRENT_TIMESTAMP,
+			hc_current_seconds    = 0,
+			hc_is_finished        = 0,
+			hc_progress_synced_at = NULL
 		WHERE id = ?
 	`, e.ID, e.BookID, string(data), id)
 	return err
@@ -371,11 +429,14 @@ func (d *DB) ResetUnmatchedSearch(ctx context.Context) error {
 func (d *DB) UnmatchBook(ctx context.Context, id int64) error {
 	_, err := d.sql.ExecContext(ctx, `
 		UPDATE books SET
-			hc_edition_id        = NULL,
-			hc_book_id           = NULL,
-			hc_edition_data_json = '',
-			hc_candidates_json   = '',
-			hc_match_searched_at = NULL
+			hc_edition_id         = NULL,
+			hc_book_id            = NULL,
+			hc_edition_data_json  = '',
+			hc_candidates_json    = '',
+			hc_match_searched_at  = NULL,
+			hc_current_seconds    = 0,
+			hc_is_finished        = 0,
+			hc_progress_synced_at = NULL
 		WHERE id = ?
 	`, id)
 	return err

@@ -56,6 +56,9 @@ func main() {
 		if err := syncService.MatchUnmatched(ctx); err != nil {
 			log.Error("cron: match unmatched", "err", err)
 		}
+		if err := syncService.RefreshHCProgress(ctx); err != nil {
+			log.Error("cron: refresh HC progress", "err", err)
+		}
 		log.Info("cron: refresh complete")
 	})
 	if err != nil {

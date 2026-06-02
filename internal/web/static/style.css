@@ -189,10 +189,18 @@ body {
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  padding: 0.4rem 0.1rem 0.6rem;
+  padding: 0.55rem 0.1rem;
   cursor: pointer;
   list-style: none;
   user-select: none;
+  position: sticky;
+  top: 56px; /* sits just below the sticky page header */
+  z-index: 10;
+  background: var(--bg);
+  /* Bg-colored spread masks the box-shadows of cards scrolling behind the bar on
+     all sides (below + left/right). Invisible against the page bg, opaque to the
+     cards underneath since the sticky bar paints above them. */
+  box-shadow: 0 0 0 8px var(--bg);
 }
 .section-header::-webkit-details-marker { display: none; }
 
@@ -214,6 +222,7 @@ details[open] .section-chevron { transform: rotate(90deg); }
 .section-dot-success { background: var(--success); }
 .section-dot-info    { background: var(--primary); }
 .section-dot-muted   { background: var(--border-strong); }
+.section-dot-danger  { background: var(--danger); }
 
 .section-title {
   font-weight: 700;
@@ -278,10 +287,26 @@ details[open] .section-chevron { transform: rotate(90deg); }
 
 /* ── matched state ── */
 .hc-edition-info { color: var(--text-muted); }
-.hc-matched { flex-direction: column; align-items: stretch; gap: 0.45rem; }
-.hc-matched .hc-badge-matched { align-self: flex-start; }
-.hc-match-detail { width: 100%; }
-.hc-matched .btn-ghost { align-self: flex-start; }
+.hc-matched { flex-direction: column; align-items: stretch; gap: 0.6rem; }
+
+/* mirror the left book layout inside the HC rail (cover + info, no extra padding) */
+.hc-book-inner { padding: 0; width: 100%; }
+
+/* highlight HC progress text when it has drifted from ABS */
+.progress-text-warn { color: var(--danger); font-weight: 600; }
+
+/* ── status footer (matched / ignored) ── */
+.hc-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+}
+.hc-status { font-size: 0.72rem; font-weight: 600; }
+.hc-status-matched { color: var(--success); }
+.hc-status-ignored { color: var(--text-muted); }
+.hc-ignored { justify-content: center; }
 
 /* ── candidates ── */
 .hc-candidates { flex-direction: column; align-items: stretch; gap: 0; }

@@ -2,18 +2,26 @@ package templates
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
 )
 
-// BookGroups splits a flat book list into the four display categories.
+// progressTolerance is how far (in seconds) ABS and Hardcover progress may drift
+// before we consider them out of sync. Keeps tiny rounding differences from
+// flagging an otherwise-synced book.
+const progressTolerance = 60.0
+
+// BookGroups splits a flat book list into the display categories.
 type BookGroups struct {
-	NeedsAction []db.Book // searched but no auto-match: candidates to pick or manual input needed
-	Matched     []db.Book // confirmed edition
-	Pending     []db.Book // not yet searched
-	Ignored     []db.Book
+	ProgressDiffers []db.Book // matched, but ABS progress has drifted from Hardcover
+	NeedsAction     []db.Book // searched but no auto-match: candidates to pick or manual input needed
+	Matched         []db.Book // confirmed edition, progress in sync
+	Pending         []db.Book // not yet searched
+	Ignored         []db.Book
 }
 
 func groupBooks(books []db.Book) BookGroups {
@@ -23,14 +31,53 @@ func groupBooks(books []db.Book) BookGroups {
 		case b.HCIgnored:
 			g.Ignored = append(g.Ignored, b)
 		case b.HCEditionID != nil:
-			g.Matched = append(g.Matched, b)
+			if progressDiffers(b) {
+				g.ProgressDiffers = append(g.ProgressDiffers, b)
+			} else {
+				g.Matched = append(g.Matched, b)
+			}
 		case b.HCMatchSearchedAt != nil:
 			g.NeedsAction = append(g.NeedsAction, b)
 		default:
 			g.Pending = append(g.Pending, b)
 		}
 	}
+
+	// Surface the most recently listened-to books first in the out-of-sync list —
+	// they're the ones whose ABS progress most likely just moved (nulls last).
+	sort.SliceStable(g.ProgressDiffers, func(i, j int) bool {
+		return lastSeenAfter(g.ProgressDiffers[i].ABSLastSeenAt, g.ProgressDiffers[j].ABSLastSeenAt)
+	})
+
 	return g
+}
+
+// lastSeenAfter reports whether a is more recent than b, treating nil as the
+// oldest possible time so books without a last-seen timestamp sort to the end.
+func lastSeenAfter(a, b *time.Time) bool {
+	if a == nil {
+		return false
+	}
+	if b == nil {
+		return true
+	}
+	return a.After(*b)
+}
+
+// progressDiffers reports whether a matched book's ABS progress is out of sync
+// with what's recorded on Hardcover. It only judges books whose Hardcover
+// progress has actually been fetched — before that we can't tell.
+func progressDiffers(b db.Book) bool {
+	if b.HCProgressSyncedAt == nil {
+		return false
+	}
+	if b.ABSIsFinished != b.HCIsFinished {
+		return true
+	}
+	if b.ABSIsFinished {
+		return false
+	}
+	return math.Abs(b.ABSCurrentSeconds-b.HCCurrentSeconds) > progressTolerance
 }
 
 func formatDate(t *time.Time) string {

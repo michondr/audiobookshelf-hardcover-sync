@@ -17,6 +17,7 @@ templ Index(books []db.Book, nextSync string) {
 }
 
 templ bookSections(g BookGroups) {
+	@bookSectionAlways("Progress out of sync", "danger", g.ProgressDiffers, "All matched books are in sync with Hardcover.")
 	if len(g.NeedsAction) > 0 {
 		@bookSection("Needs your input", "warning", false, g.NeedsAction)
 	}
@@ -29,6 +30,28 @@ templ bookSections(g BookGroups) {
 	if len(g.Ignored) > 0 {
 		@bookSection("Ignored", "muted", true, g.Ignored)
 	}
+}
+
+// bookSectionAlways renders a section even when it has no books, kept open so
+// it stays visible as a status line. Shows emptyMsg in place of cards when empty.
+templ bookSectionAlways(title, variant string, books []db.Book, emptyMsg string) {
+	<details open class="book-section">
+		<summary class="section-header">
+			<span class="section-chevron">▶</span>
+			<span class={ "section-dot", "section-dot-" + variant }></span>
+			<span class="section-title">{ title }</span>
+			<span class="section-count">{ fmt.Sprintf("%d", len(books)) }</span>
+		</summary>
+		<div class="section-body">
+			if len(books) == 0 {
+				<p class="empty-state">{ emptyMsg }</p>
+			} else {
+				for _, book := range books {
+					@BookCard(book)
+				}
+			}
+		</div>
+	</details>
 }
 
 templ bookSection(title, variant string, collapsed bool, books []db.Book) {

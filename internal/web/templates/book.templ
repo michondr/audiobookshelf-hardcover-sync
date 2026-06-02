@@ -55,13 +55,15 @@ templ BookCard(book db.Book) {
 templ hcSection(book db.Book) {
 	if book.HCIgnored {
 		<div class="hc-section hc-ignored">
-			<span class="hc-badge hc-badge-ignored">Ignored</span>
-			<button
-				class="btn btn-sm btn-ghost"
-				hx-post={ fmt.Sprintf("/book/%d/unignore", book.ID) }
-				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-				hx-swap="outerHTML"
-			>Unignore</button>
+			<div class="hc-foot">
+				<span class="hc-status hc-status-ignored">Ignored</span>
+				<button
+					class="btn btn-sm btn-ghost"
+					hx-post={ fmt.Sprintf("/book/%d/unignore", book.ID) }
+					hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+					hx-swap="outerHTML"
+				>Unignore</button>
+			</div>
 		</div>
 	} else if book.HCEditionID != nil {
 		@hcMatched(book)
@@ -78,31 +80,45 @@ templ hcSection(book db.Book) {
 
 templ hcMatched(book db.Book) {
 	<div class="hc-section hc-matched">
-		<span class="hc-badge hc-badge-matched">✓ Matched</span>
 		if e := book.ParsedEdition(); e != nil {
-			<div class="candidate hc-match-detail">
+			<div class="book-inner hc-book-inner">
 				if e.ImageURL != "" {
-					<img class="candidate-cover" src={ e.ImageURL } alt={ e.Title } loading="lazy" onerror="this.style.display='none'"/>
+					<img class="cover" src={ e.ImageURL } alt={ e.Title } loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
+					<div class="cover-placeholder" style="display:none">📚</div>
 				} else {
-					<div class="candidate-cover-placeholder">📚</div>
+					<div class="cover-placeholder">📚</div>
 				}
-				<div class="candidate-info">
-					<span class="candidate-title">{ e.Title }</span>
+				<div class="book-info">
+					<div class="book-title" title={ e.Title }>{ e.Title }</div>
 					if e.Author != "" {
-						<span class="candidate-meta">{ e.Author }</span>
+						<div class="book-author">{ e.Author }</div>
 					}
-					<span class="candidate-meta">{ candidateMeta(*e) }</span>
+					if book.HCProgressSyncedAt != nil {
+						<div class="progress-wrap">
+							<div class="progress-bar">
+								<div
+									class={ templ.KV("progress-fill", true), templ.KV("finished", book.HCIsFinished) }
+									style={ hcProgressStyle(book) }
+								></div>
+							</div>
+							<span class={ "progress-text", templ.KV("progress-text-warn", progressDiffers(book)) }>{ hcProgressLabel(book) }</span>
+						</div>
+					}
+					<div class="dates-row">{ candidateMeta(*e) }</div>
 				</div>
 			</div>
 		} else if info := hcEditionInfo(book); info != "" {
 			<span class="hc-edition-info">{ info }</span>
 		}
-		<button
-			class="btn btn-sm btn-ghost"
-			hx-post={ fmt.Sprintf("/book/%d/unmatch", book.ID) }
-			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
-			hx-swap="outerHTML"
-		>Unmatch</button>
+		<div class="hc-foot">
+			<span class="hc-status hc-status-matched">✓ Matched</span>
+			<button
+				class="btn btn-sm btn-ghost"
+				hx-post={ fmt.Sprintf("/book/%d/unmatch", book.ID) }
+				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
+				hx-swap="outerHTML"
+			>Unmatch</button>
+		</div>
 	</div>
 }
 
@@ -205,6 +221,22 @@ func absProgressStyle(book db.Book) string {
 	return "width:100%"
 }
 
+// hcProgressStyle mirrors absProgressStyle for the Hardcover progress bar,
+// reusing the ABS audiobook total (Hardcover exposes none) for the percentage.
+func hcProgressStyle(book db.Book) string {
+	if book.HCIsFinished {
+		return "width:100%"
+	}
+	if book.ABSTotalSeconds > 0 {
+		pct := math.Min(book.HCCurrentSeconds/book.ABSTotalSeconds*100, 100)
+		return fmt.Sprintf("width:%.1f%%", pct)
+	}
+	if book.HCCurrentSeconds <= 0 {
+		return "width:0%"
+	}
+	return "width:100%"
+}
+
 func absProgressLabel(book db.Book) string {
 	if book.ABSIsFinished {
 		return "Finished · " + formatSeconds(book.ABSCurrentSeconds)
@@ -214,4 +246,21 @@ func absProgressLabel(book db.Book) string {
 		return fmt.Sprintf("%.0f%% · %s", pct, formatSeconds(book.ABSCurrentSeconds))
 	}
 	return formatSeconds(book.ABSCurrentSeconds)
+}
+
+// hcProgressLabel mirrors absProgressLabel for the progress recorded on
+// Hardcover. Hardcover doesn't expose a total length, so the percentage reuses
+// the ABS total (the same audiobook) when available.
+func hcProgressLabel(book db.Book) string {
+	if book.HCIsFinished {
+		return "Finished"
+	}
+	if book.HCCurrentSeconds <= 0 {
+		return "Not started"
+	}
+	if book.ABSTotalSeconds > 0 {
+		pct := book.HCCurrentSeconds / book.ABSTotalSeconds * 100
+		return fmt.Sprintf("%.0f%% · %s", pct, formatSeconds(book.HCCurrentSeconds))
+	}
+	return formatSeconds(book.HCCurrentSeconds)
 }

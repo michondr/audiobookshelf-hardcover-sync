@@ -40,6 +40,9 @@ func (s *Service) MatchUnmatchedInBackground() bool {
 		if err := s.MatchUnmatched(ctx); err != nil {
 			s.log.Error("background match", "err", err)
 		}
+		if err := s.RefreshHCProgress(ctx); err != nil {
+			s.log.Error("background HC progress refresh", "err", err)
+		}
 	}()
 	return true
 }
@@ -142,6 +145,47 @@ func (s *Service) MatchUnmatched(ctx context.Context) error {
 	s.log.Info("match pass complete",
 		"books", len(books), "matched", matched, "via_library", viaLibrary,
 		"candidates", candidates, "not_found", notFound)
+	return nil
+}
+
+// RefreshHCProgress pulls the current reading progress from Hardcover for every
+// matched book and stores it, so the UI can flag books whose ABS progress has
+// drifted from Hardcover. It loads the user's whole library once and maps it by
+// Hardcover book ID. A matched book absent from the library (e.g. matched from
+// the catalog but never added to a shelf) records zero progress — which is
+// correct: ABS is ahead and the book still needs pushing to Hardcover.
+func (s *Service) RefreshHCProgress(ctx context.Context) error {
+	matched, err := s.db.ListMatchedBooks(ctx)
+	if err != nil {
+		return fmt.Errorf("list matched: %w", err)
+	}
+	if len(matched) == 0 {
+		return nil
+	}
+
+	lib, err := s.hc.GetMyUserBooks(ctx)
+	if err != nil {
+		return fmt.Errorf("load HC library: %w", err)
+	}
+	byBook := make(map[int64]hardcover.UserBookSummary, len(lib))
+	for _, ub := range lib {
+		byBook[ub.BookID] = ub
+	}
+
+	for _, book := range matched {
+		if book.HCBookID == nil {
+			continue
+		}
+		var seconds float64
+		var finished bool
+		if ub, ok := byBook[*book.HCBookID]; ok {
+			finished = ub.StatusID == hardcover.StatusRead
+			seconds = ub.ActiveReadProgress()
+		}
+		if err := s.db.UpdateHCProgress(ctx, book.ID, seconds, finished); err != nil {
+			s.log.Error("update HC progress", "book_id", book.ID, "err", err)
+		}
+	}
 	return nil
 }
 
