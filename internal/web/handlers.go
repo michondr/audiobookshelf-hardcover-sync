@@ -24,6 +24,17 @@ type handler struct {
 	nextSync func() time.Time
 }
 
+// handleHealthz is a liveness/readiness probe: it returns 200 only when the
+// database connection is reachable, otherwise 503.
+func (h *handler) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if err := h.db.Ping(r.Context()); err != nil {
+		http.Error(w, "db unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, "ok")
+}
+
 func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)

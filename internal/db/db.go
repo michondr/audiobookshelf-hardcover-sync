@@ -124,6 +124,9 @@ func Open(path string) (*DB, error) {
 
 func (d *DB) Close() error { return d.sql.Close() }
 
+// Ping verifies the database connection is alive, for health checks.
+func (d *DB) Ping(ctx context.Context) error { return d.sql.PingContext(ctx) }
+
 // CandidateEdition holds the edition data we cache locally for display and matching.
 type CandidateEdition struct {
 	ID        int64  `json:"id"`

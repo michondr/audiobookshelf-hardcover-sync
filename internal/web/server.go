@@ -38,6 +38,7 @@ func NewServer(
 	sub, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 
+	mux.HandleFunc("GET /healthz", h.handleHealthz)
 	mux.HandleFunc("/", h.handleIndex)
 	mux.HandleFunc("/abs-link/", h.handleAbsLink)
 	mux.HandleFunc("/proxy/abs-cover/", h.handleAbsCoverProxy)
