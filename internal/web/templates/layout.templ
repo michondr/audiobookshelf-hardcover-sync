@@ -13,7 +13,7 @@ templ Layout(nextSync string) {
 		</head>
 		<body>
 			<header class="header">
-				<a href="/" class="header-title">ABS → Hardcover</a>
+				<a href="/" class="header-title" title="Reload the book list">ABS → Hardcover</a>
 				<div class="header-right">
 					<span class="header-meta">{ nextSync }</span>
 					<button
@@ -22,6 +22,7 @@ templ Layout(nextSync string) {
 						hx-target="#sync-toast"
 						hx-swap="innerHTML"
 						hx-indicator="#sync-spinner"
+						title="Pull the latest library and listening progress from Audiobookshelf, then match new books against Hardcover"
 					>▶ Refresh from ABS</button>
 					<button
 						class="btn btn-secondary btn-sm"
@@ -30,6 +31,7 @@ templ Layout(nextSync string) {
 						hx-swap="innerHTML"
 						hx-indicator="#sync-spinner"
 						hx-confirm="Re-run Hardcover matching for every book that isn't matched or ignored?"
+						title="Re-run Hardcover matching for every book that isn't matched or ignored"
 					>↻ Re-match</button>
 					<span id="sync-spinner" class="htmx-indicator">working…</span>
 				</div>

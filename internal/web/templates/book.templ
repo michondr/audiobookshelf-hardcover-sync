@@ -96,6 +96,7 @@ templ hcSection(book db.Book) {
 					hx-post={ fmt.Sprintf("/book/%d/unignore", book.ID) }
 					hx-target={ fmt.Sprintf("#book-%d", book.ID) }
 					hx-swap="outerHTML"
+					title="Stop ignoring this book and search Hardcover for a match again"
 				>Unignore</button>
 			</div>
 		</div>
@@ -173,6 +174,7 @@ templ hcMatched(book db.Book) {
 				hx-post={ fmt.Sprintf("/book/%d/unmatch", book.ID) }
 				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
 				hx-swap="outerHTML"
+				title="Clear this Hardcover match and search for it again on the next sync"
 			>Unmatch</button>
 		</div>
 	</div>
@@ -197,13 +199,14 @@ templ hcCandidates(book db.Book) {
 				hx-swap="outerHTML"
 			>
 				<input class="input-sm" type="number" name="edition_id" placeholder="Edition ID" min="1" required/>
-				<button class="btn btn-sm btn-secondary" type="submit">Use</button>
+				<button class="btn btn-sm btn-secondary" type="submit" title="Match this book to the Hardcover edition ID you entered">Use</button>
 			</form>
 			<button
 				class="btn btn-sm btn-ghost"
 				hx-post={ fmt.Sprintf("/book/%d/ignore", book.ID) }
 				hx-target={ fmt.Sprintf("#book-%d", book.ID) }
 				hx-swap="outerHTML"
+				title="Ignore this book — stop trying to match it to Hardcover"
 			>Ignore</button>
 		</div>
 	</div>
@@ -241,7 +244,7 @@ templ candidateRow(bookID int64, c db.CandidateEdition) {
 			hx-swap="outerHTML"
 		>
 			<input type="hidden" name="edition_id" value={ fmt.Sprintf("%d", c.ID) }/>
-			<button class="btn btn-sm btn-primary" type="submit">Pick</button>
+			<button class="btn btn-sm btn-primary" type="submit" title="Match this book to this Hardcover edition">Pick</button>
 		</form>
 	</div>
 }
@@ -254,6 +257,7 @@ templ hcNoMatch(book db.Book) {
 			href={ templ.SafeURL(hcSearchURL(book.ABSTitle, book.ABSAuthor)) }
 			target="_blank"
 			rel="noopener"
+			title="Search Hardcover for this title and author in a new tab"
 		>Search on Hardcover</a>
 		<form
 			class="hc-manual-form"
@@ -262,13 +266,14 @@ templ hcNoMatch(book db.Book) {
 			hx-swap="outerHTML"
 		>
 			<input class="input-sm" type="number" name="edition_id" placeholder="Edition ID" min="1" required/>
-			<button class="btn btn-sm btn-secondary" type="submit">Set Edition</button>
+			<button class="btn btn-sm btn-secondary" type="submit" title="Match this book to the Hardcover edition ID you entered">Set Edition</button>
 		</form>
 		<button
 			class="btn btn-sm btn-ghost"
 			hx-post={ fmt.Sprintf("/book/%d/ignore", book.ID) }
 			hx-target={ fmt.Sprintf("#book-%d", book.ID) }
 			hx-swap="outerHTML"
+			title="Ignore this book — stop trying to match it to Hardcover"
 		>Ignore</button>
 	</div>
 }
