@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -22,7 +23,7 @@ CREATE TABLE IF NOT EXISTS books (
 	abs_total_seconds    REAL    NOT NULL DEFAULT 0,
 	abs_current_seconds  REAL    NOT NULL DEFAULT 0,
 	abs_is_finished      INTEGER NOT NULL DEFAULT 0,
-	abs_last_seen_at     DATETIME,
+	abs_last_played_at   DATETIME,
 	abs_started_at       DATETIME,
 	abs_finished_at      DATETIME,
 	hc_edition_id        INTEGER,
@@ -44,6 +45,11 @@ AFTER UPDATE ON books FOR EACH ROW
 BEGIN
 	UPDATE books SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
 END;
+
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL DEFAULT ''
+);
 `
 
 // migrations run at startup; errors are ignored (column may already exist / not exist).
@@ -68,6 +74,8 @@ var migrations = []string{
 	`ALTER TABLE books ADD COLUMN hc_is_finished INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE books ADD COLUMN hc_dnf INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE books ADD COLUMN hc_progress_synced_at DATETIME`,
+	// rename: abs_last_seen_at now holds "last played" semantics (errors once renamed; ignored)
+	`ALTER TABLE books RENAME COLUMN abs_last_seen_at TO abs_last_played_at`,
 	// one-time cleanup of columns removed in the refactor (no-op once gone)
 	`ALTER TABLE books DROP COLUMN hc_user_book_id`,
 	`ALTER TABLE books DROP COLUMN hc_user_book_read_id`,
@@ -127,6 +135,67 @@ func (d *DB) Close() error { return d.sql.Close() }
 // Ping verifies the database connection is alive, for health checks.
 func (d *DB) Ping(ctx context.Context) error { return d.sql.PingContext(ctx) }
 
+// SettingAutoSyncProgress is the settings key for the "auto sync progress to HC"
+// toggle: when "1", the cron run pushes ABS progress for out-of-sync books.
+const SettingAutoSyncProgress = "auto_sync_progress"
+
+// GetBoolSetting reads a boolean setting, defaulting to false when unset.
+func (d *DB) GetBoolSetting(ctx context.Context, key string) (bool, error) {
+	var value string
+	err := d.sql.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return value == "1", nil
+}
+
+// SetBoolSetting upserts a boolean setting as "1"/"0".
+func (d *DB) SetBoolSetting(ctx context.Context, key string, value bool) error {
+	v := "0"
+	if value {
+		v = "1"
+	}
+	_, err := d.sql.ExecContext(ctx, `
+		INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, key, v)
+	return err
+}
+
+// Progress-comparison tolerance. The matched Hardcover edition is often a
+// slightly different recording than the ABS file, so the same listening spot
+// maps to second offsets that diverge proportionally to how far in you are — a
+// flat threshold flags long books that are really in the same place. So the
+// tolerance scales with book length, with a floor to keep short books sane.
+const (
+	progressToleranceFloor    = 120.0 // 2 minutes
+	progressToleranceFraction = 0.01  // or 1% of the audiobook's length, whichever is larger
+)
+
+// ProgressDiffers reports whether this matched book's ABS progress is out of
+// sync with what's recorded on Hardcover. It only judges books whose Hardcover
+// progress has actually been fetched — before that we can't tell. This is the
+// single source of truth for the "Progress out of sync" category and auto-sync.
+func (b Book) ProgressDiffers() bool {
+	if b.HCProgressSyncedAt == nil {
+		return false
+	}
+	if b.ABSIsFinished != b.HCIsFinished {
+		return true
+	}
+	if b.ABSIsFinished {
+		return false
+	}
+	tolerance := progressToleranceFloor
+	if t := b.ABSTotalSeconds * progressToleranceFraction; t > tolerance {
+		tolerance = t
+	}
+	return math.Abs(b.ABSCurrentSeconds-b.HCCurrentSeconds) > tolerance
+}
+
 // CandidateEdition holds the edition data we cache locally for display and matching.
 type CandidateEdition struct {
 	ID        int64  `json:"id"`
@@ -162,7 +231,7 @@ type Book struct {
 	ABSTotalSeconds     float64
 	ABSCurrentSeconds   float64
 	ABSIsFinished       bool
-	ABSLastSeenAt       *time.Time
+	ABSLastPlayedAt     *time.Time
 	ABSStartedAt        *time.Time
 	ABSFinishedAt       *time.Time
 	HCEditionID         *int64
@@ -203,7 +272,7 @@ const selectAll = `
 SELECT
 	id, abs_item_id, abs_title, abs_author, abs_isbn, abs_asin,
 	abs_added_at, abs_total_seconds, abs_current_seconds, abs_is_finished,
-	abs_last_seen_at, abs_started_at, abs_finished_at,
+	abs_last_played_at, abs_started_at, abs_finished_at,
 	hc_edition_id, hc_book_id, hc_ignored, hc_candidates_json, hc_edition_data_json, hc_match_searched_at,
 	hc_current_seconds, hc_is_finished, hc_dnf, hc_progress_synced_at,
 	created_at, updated_at
@@ -371,7 +440,10 @@ func (d *DB) UpsertABSBook(ctx context.Context, absItemID, title, author, isbn, 
 	return err
 }
 
-func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSeconds float64, isFinished bool, lastSeenAt time.Time, startedAt, finishedAt *time.Time) error {
+// UpdateABSProgress records a book's ABS progress. lastPlayedAt is the time the
+// listener last made progress (ABS progress lastUpdate); pass nil for a book
+// with no progress so the column stays NULL rather than recording the fetch time.
+func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSeconds float64, isFinished bool, lastPlayedAt, startedAt, finishedAt *time.Time) error {
 	fin := 0
 	if isFinished {
 		fin = 1
@@ -384,7 +456,7 @@ func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSec
 			abs_started_at      = CASE WHEN ? IS NOT NULL THEN ? ELSE abs_started_at END,
 			abs_finished_at     = CASE WHEN ? IS NOT NULL THEN ? ELSE abs_finished_at END
 		WHERE abs_item_id = ?
-	`, currentSeconds, fin, lastSeenAt, startedAt, startedAt, finishedAt, finishedAt, absItemID)
+	`, currentSeconds, fin, lastPlayedAt, startedAt, startedAt, finishedAt, finishedAt, absItemID)
 	return err
 }
 

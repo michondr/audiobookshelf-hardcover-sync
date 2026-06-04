@@ -59,6 +59,16 @@ func main() {
 		if err := syncService.RefreshHCProgress(ctx); err != nil {
 			log.Error("cron: refresh HC progress", "err", err)
 		}
+		// Optionally push ABS progress for out-of-sync books, if the toggle is on.
+		if on, err := database.GetBoolSetting(ctx, db.SettingAutoSyncProgress); err != nil {
+			log.Error("cron: read auto-sync setting", "err", err)
+		} else if on {
+			if n, err := syncService.AutoSyncOutOfSync(ctx); err != nil {
+				log.Error("cron: auto-sync progress", "err", err)
+			} else {
+				log.Info("cron: auto-synced progress", "count", n)
+			}
+		}
 		log.Info("cron: refresh complete")
 	})
 	if err != nil {

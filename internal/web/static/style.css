@@ -50,8 +50,36 @@ body {
   text-decoration: none;
   letter-spacing: -0.02em;
 }
-.header-right { display: flex; align-items: center; gap: 1rem; }
+.header-right { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem 0.75rem; }
 .header-meta { font-size: 0.8rem; color: var(--text-muted); }
+.header-sep { width: 1px; align-self: stretch; min-height: 20px; background: var(--border-strong); }
+
+/* ── toggle switch ── */
+.switch { display: inline-flex; align-items: center; gap: 0.45rem; cursor: pointer; user-select: none; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.switch input:checked + .switch-track { background: var(--primary); }
+.switch input:checked + .switch-track .switch-thumb { transform: translateX(16px); }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--primary); outline-offset: 2px; }
+.switch-text { font-size: 0.8rem; color: var(--text-muted); }
 
 /* ── layout ── */
 .content { max-width: 1080px; margin: 0 auto; padding: 1.5rem; }

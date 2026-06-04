@@ -6,8 +6,8 @@ import (
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
 )
 
-templ Index(books []db.Book, nextSync string) {
-	@Layout(nextSync) {
+templ Index(books []db.Book, nextSync string, autoSync bool) {
+	@Layout(nextSync, autoSync) {
 		if len(books) == 0 {
 			<p class="empty-state">No books yet — hit Refresh from ABS to load your library.</p>
 		} else {

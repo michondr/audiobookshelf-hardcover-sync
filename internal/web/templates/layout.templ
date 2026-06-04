@@ -1,6 +1,6 @@
 package templates
 
-templ Layout(nextSync string) {
+templ Layout(nextSync string, autoSync bool) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
@@ -15,7 +15,24 @@ templ Layout(nextSync string) {
 			<header class="header">
 				<a href="/" class="header-title" title="Reload the book list">ABS → Hardcover</a>
 				<div class="header-right">
-					<span class="header-meta">{ nextSync }</span>
+					<span class="header-meta" title={ nextSyncTitle(autoSync) }>{ nextSync }</span>
+					<span class="header-sep" aria-hidden="true"></span>
+					<label
+						class="switch"
+						title="When on, the scheduled sync automatically pushes ABS progress to Hardcover for books in 'Progress out of sync'"
+					>
+						<input
+							type="checkbox"
+							name="enabled"
+							checked?={ autoSync }
+							hx-post="/settings/auto-sync"
+							hx-target="#sync-toast"
+							hx-swap="innerHTML"
+						/>
+						<span class="switch-track"><span class="switch-thumb"></span></span>
+						<span class="switch-text">Auto-sync progress</span>
+					</label>
+					<span class="header-sep" aria-hidden="true"></span>
 					<button
 						class="btn btn-primary btn-sm"
 						hx-post="/sync"

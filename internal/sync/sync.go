@@ -65,11 +65,13 @@ func (s *Service) RefreshFromABS(ctx context.Context) error {
 			continue
 		}
 
-		lastSeen := b.LastUpdate
-		if lastSeen.IsZero() {
-			lastSeen = time.Now()
+		// b.LastUpdate is the ABS progress lastUpdate (when last played). Leave it
+		// nil for never-played books so it doesn't get stamped with the fetch time.
+		var lastPlayed *time.Time
+		if !b.LastUpdate.IsZero() {
+			lastPlayed = &b.LastUpdate
 		}
-		if err := s.db.UpdateABSProgress(ctx, b.ItemID, b.CurrentSeconds, b.IsFinished, lastSeen, b.StartedAt, b.FinishedAt); err != nil {
+		if err := s.db.UpdateABSProgress(ctx, b.ItemID, b.CurrentSeconds, b.IsFinished, lastPlayed, b.StartedAt, b.FinishedAt); err != nil {
 			s.log.Error("update progress", "item_id", b.ItemID, "err", err)
 		}
 	}
@@ -280,6 +282,32 @@ func (s *Service) PushProgress(ctx context.Context, bookID int64, reread bool) e
 	s.log.Info("pushed progress to HC",
 		"book_id", bookID, "reread", reread, "progress", progress, "finished", book.ABSIsFinished)
 	return nil
+}
+
+// AutoSyncOutOfSync pushes ABS progress to Hardcover for every matched book whose
+// progress has drifted (the "Progress out of sync" category), skipping books
+// marked Did-Not-Finish. It returns how many books were synced. A single book's
+// failure is logged and skipped rather than aborting the whole pass.
+func (s *Service) AutoSyncOutOfSync(ctx context.Context) (int, error) {
+	matched, err := s.db.ListMatchedBooks(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("list matched: %w", err)
+	}
+	synced := 0
+	for _, b := range matched {
+		if b.HCDNF || !b.ProgressDiffers() {
+			continue
+		}
+		if err := s.PushProgress(ctx, b.ID, false); err != nil {
+			s.log.Warn("auto-sync push", "book_id", b.ID, "title", b.ABSTitle, "err", err)
+			continue
+		}
+		synced++
+	}
+	if synced > 0 {
+		s.log.Info("auto-synced out-of-sync books", "count", synced)
+	}
+	return synced, nil
 }
 
 // progressForEdition maps the book's current ABS progress onto the unit the

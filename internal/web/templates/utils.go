@@ -2,32 +2,12 @@ package templates
 
 import (
 	"fmt"
-	"math"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/michondr/audiobookshelf-hardcover-sync/internal/db"
 )
-
-// Progress-comparison tolerance. The matched Hardcover edition is often a
-// slightly different recording than the ABS file, so the same listening spot
-// maps to second offsets that diverge proportionally to how far in you are — a
-// flat threshold flags long books that are really in the same place. So the
-// tolerance scales with book length, with a floor to keep short books sane.
-const (
-	progressToleranceFloor    = 120.0 // 2 minutes
-	progressToleranceFraction = 0.01  // or 1% of the audiobook's length, whichever is larger
-)
-
-// progressTolerance returns how far (in seconds) ABS and Hardcover progress may
-// drift for a given book before we consider it out of sync.
-func progressTolerance(b db.Book) float64 {
-	if t := b.ABSTotalSeconds * progressToleranceFraction; t > progressToleranceFloor {
-		return t
-	}
-	return progressToleranceFloor
-}
 
 // BookGroups splits a flat book list into the display categories.
 type BookGroups struct {
@@ -70,24 +50,36 @@ func groupBooks(books []db.Book) BookGroups {
 		return lastSeenAfter(g.ProgressDiffers[i].ABSLastSeenAt, g.ProgressDiffers[j].ABSLastSeenAt)
 	})
 
-	// Order matched/finished books by when reading started, falling back to when
-	// the book was added to ABS when there's no start date — most recent first.
-	sortByStarted := func(s []db.Book) {
-		sort.SliceStable(s, func(i, j int) bool {
-			return lastSeenAfter(startedOrAdded(s[i]), startedOrAdded(s[j]))
-		})
-	}
-	sortByStarted(g.Matched)
-	sortByStarted(g.Finished)
+	// Order matched books by when they were last listened to, falling back to when
+	// they were added to ABS for never-started books — most recent first. This
+	// surfaces what you're actively reading at the top.
+	sort.SliceStable(g.Matched, func(i, j int) bool {
+		return lastSeenAfter(lastListenedOrAdded(g.Matched[i]), lastListenedOrAdded(g.Matched[j]))
+	})
+
+	// Finished books are ordered by when reading started (then date added).
+	sort.SliceStable(g.Finished, func(i, j int) bool {
+		return lastSeenAfter(startedOrAdded(g.Finished[i]), startedOrAdded(g.Finished[j]))
+	})
 
 	return g
 }
 
-// startedOrAdded returns the date used to order matched books: the ABS start
+// startedOrAdded returns the date used to order finished books: the ABS start
 // date, or the date the book was added to ABS when reading never started.
 func startedOrAdded(b db.Book) *time.Time {
 	if b.ABSStartedAt != nil {
 		return b.ABSStartedAt
+	}
+	return b.ABSAddedAt
+}
+
+// lastListenedOrAdded returns the date used to order matched books: when the
+// book was last listened to, or when it was added to ABS if never played —
+// coalesce(last_listened_to, added_in_abs).
+func lastListenedOrAdded(b db.Book) *time.Time {
+	if b.ABSLastSeenAt != nil {
+		return b.ABSLastSeenAt
 	}
 	return b.ABSAddedAt
 }
@@ -105,19 +97,18 @@ func lastSeenAfter(a, b *time.Time) bool {
 }
 
 // progressDiffers reports whether a matched book's ABS progress is out of sync
-// with what's recorded on Hardcover. It only judges books whose Hardcover
-// progress has actually been fetched — before that we can't tell.
-func progressDiffers(b db.Book) bool {
-	if b.HCProgressSyncedAt == nil {
-		return false
+// with what's recorded on Hardcover. The logic lives on db.Book so the cron
+// auto-sync and this UI grouping share one definition.
+func progressDiffers(b db.Book) bool { return b.ProgressDiffers() }
+
+// nextSyncTitle describes what the next scheduled sync will do, reflecting the
+// auto-sync toggle, for the header's tooltip.
+func nextSyncTitle(autoSync bool) string {
+	base := "At the next scheduled sync, the app pulls your library and listening progress from Audiobookshelf and matches new books against Hardcover."
+	if autoSync {
+		return base + " Auto-sync is on, so it will also push progress to Hardcover for books that are out of sync."
 	}
-	if b.ABSIsFinished != b.HCIsFinished {
-		return true
-	}
-	if b.ABSIsFinished {
-		return false
-	}
-	return math.Abs(b.ABSCurrentSeconds-b.HCCurrentSeconds) > progressTolerance(b)
+	return base + " Progress is not pushed to Hardcover automatically (turn on Auto-sync to enable that)."
 }
 
 // canMarkDNF reports whether the "Did not finish" action applies: the book is

@@ -55,8 +55,30 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		nextSync = "⏳ Matching… · " + nextSync
 	}
 
+	autoSync, err := h.db.GetBoolSetting(r.Context(), db.SettingAutoSyncProgress)
+	if err != nil {
+		h.log.Warn("read auto-sync setting", "err", err)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.Index(books, nextSync).Render(r.Context(), w)
+	_ = templates.Index(books, nextSync, autoSync).Render(r.Context(), w)
+}
+
+// handleSetAutoSync persists the "auto sync progress to HC" toggle. The checkbox
+// only sends its value when checked, so an absent value means "off".
+func (h *handler) handleSetAutoSync(w http.ResponseWriter, r *http.Request) {
+	enabled := r.FormValue("enabled") != ""
+	if err := h.db.SetBoolSetting(r.Context(), db.SettingAutoSyncProgress, enabled); err != nil {
+		h.log.Error("save auto-sync setting", "err", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if enabled {
+		fmt.Fprint(w, `<div class="toast">Auto-sync enabled — the scheduled sync will push out-of-sync progress to Hardcover.</div>`)
+	} else {
+		fmt.Fprint(w, `<div class="toast">Auto-sync disabled.</div>`)
+	}
 }
 
 func (h *handler) handleAbsCoverProxy(w http.ResponseWriter, r *http.Request) {
