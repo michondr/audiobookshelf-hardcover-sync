@@ -109,9 +109,9 @@ body {
   margin-bottom: 0.5rem;
   overflow: hidden;
   box-shadow: var(--shadow);
-  transition: box-shadow 0.15s;
+  transition: box-shadow 0.15s, background 0.15s;
 }
-.book-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.5), 0 0 0 1px var(--border-strong); }
+.book-card:hover { background: var(--surface-hover); box-shadow: 0 2px 8px rgba(0,0,0,.5), 0 0 0 1px var(--border-strong); }
 
 .book-inner {
   display: flex;
@@ -271,7 +271,9 @@ details[open] .section-chevron { transform: rotate(90deg); }
   border-radius: 99px;
 }
 
-.section-body { padding-bottom: 0.25rem; }
+/* padding-top clears the sticky header's 8px box-shadow spread so the first
+   card's top border isn't masked behind it. */
+.section-body { padding-top: 8px; padding-bottom: 0.25rem; }
 
 /* ── ignored book card ── */
 .book-ignored { opacity: 0.55; }
@@ -287,7 +289,6 @@ details[open] .section-chevron { transform: rotate(90deg); }
   min-width: 0;
   padding: 0.85rem 1.1rem;
   border-left: 1px solid var(--border);
-  background: var(--bg);
   font-size: 0.8rem;
 }
 
@@ -295,6 +296,29 @@ details[open] .section-chevron { transform: rotate(90deg); }
 @media (max-width: 720px) {
   /* content spans the full viewport, no gutter */
   .content { max-width: none; padding: 0; }
+
+  /* header scrolls away with the page instead of sticking, and grows to fit the
+     right-side controls stacked into two rows. */
+  .header {
+    position: static;
+    height: auto;
+    min-height: 56px;
+    padding: 0.5rem 1rem 0.85rem;
+    box-shadow: none;
+  }
+  /* right-side controls take the remaining width and right-align, wrapping into
+     two rows: [next-sync · toggle] then [Refresh · Re-match]. */
+  .header-right { flex: 1; justify-content: flex-end; }
+  /* the separator after the toggle becomes an invisible full-width line break,
+     pushing the buttons onto their own row. */
+  .switch + .header-sep {
+    flex-basis: 100%;
+    width: 0;
+    min-height: 0;
+    background: transparent;
+  }
+  /* section headers now stick to the very top, since the page header is gone. */
+  .section-header { top: 0; }
 
   /* cards lose their margin/rounding so they sit flush to the screen edges */
   .book-card {
