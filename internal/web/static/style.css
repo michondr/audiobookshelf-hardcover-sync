@@ -115,9 +115,10 @@ body {
 
 .book-inner {
   display: flex;
+  flex-wrap: wrap;
   flex: 1;
   min-width: 0;
-  gap: 0.9rem;
+  gap: 0.6rem 0.9rem;
   padding: 1rem 1.25rem;
 }
 
@@ -343,6 +344,24 @@ details[open] .section-chevron { transform: rotate(90deg); }
 
   /* slightly smaller cover so the left half fits a narrow column */
   .cover, .cover-placeholder { width: 48px; min-width: 48px; height: 66px; }
+
+  /* in the narrow left half, let action buttons grow to fill the row and wrap
+     their label rather than overflow the card edge */
+  .hc-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    text-align: center;
+    white-space: normal;
+  }
+
+  /* "pick one" candidate cards can't breathe in half a row — the covers,
+     tags and Pick buttons overflow the edge. Stack the card so the ABS half
+     sits on top and the candidate list gets the full width below. */
+  .book-card:has(.hc-candidates) { flex-direction: column; }
+  .book-card:has(.hc-candidates) .hc-section {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
 }
 
 /* ── HC status badges ── */
@@ -370,10 +389,13 @@ details[open] .section-chevron { transform: rotate(90deg); }
 .progress-text-warn { color: var(--danger); font-weight: 600; }
 
 /* ── matched action buttons (sync progress / reread) ── */
+/* full-width row beneath the cover+info, so buttons use the space under the
+   cover instead of being squeezed into the narrow info column (and clipped) */
 .hc-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+  flex-basis: 100%;
   width: 100%;
 }
 
