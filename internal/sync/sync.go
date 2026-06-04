@@ -183,6 +183,16 @@ func (s *Service) RefreshHCProgress(ctx context.Context) error {
 			finished = ub.StatusID == hardcover.StatusRead
 			dnf = ub.StatusID == hardcover.StatusDidNotFinish
 			seconds = ub.ActiveReadProgress()
+			// Page-based editions (no audio length) record progress_pages, not
+			// seconds. Convert it back to equivalent ABS seconds so drift
+			// detection compares like with like instead of always seeing 0.
+			if seconds <= 0 && book.HCEditionID != nil {
+				if pages := ub.ActiveReadProgressPages(); pages > 0 && book.ABSTotalSeconds > 0 {
+					if ed, err := s.hc.GetEdition(ctx, *book.HCEditionID); err == nil && ed.Pages > 0 {
+						seconds = pages / float64(ed.Pages) * book.ABSTotalSeconds
+					}
+				}
+			}
 		}
 		if err := s.db.UpdateHCProgress(ctx, book.ID, seconds, finished, dnf); err != nil {
 			s.log.Error("update HC progress", "book_id", book.ID, "err", err)

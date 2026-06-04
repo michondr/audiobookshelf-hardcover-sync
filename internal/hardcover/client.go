@@ -606,6 +606,7 @@ type UserBookSummary struct {
 	Reads    []struct {
 		ID              int64   `json:"id"`
 		ProgressSeconds float64 `json:"progress_seconds"`
+		ProgressPages   float64 `json:"progress_pages"`
 	} `json:"user_book_reads"`
 }
 
@@ -620,6 +621,16 @@ func (u UserBookSummary) ActiveReadID() *int64 {
 func (u UserBookSummary) ActiveReadProgress() float64 {
 	if len(u.Reads) > 0 {
 		return u.Reads[0].ProgressSeconds
+	}
+	return 0
+}
+
+// ActiveReadProgressPages returns the active read's page progress, used for
+// editions that have no audio length (physical/ebook) and so record pages
+// instead of seconds.
+func (u UserBookSummary) ActiveReadProgressPages() float64 {
+	if len(u.Reads) > 0 {
+		return u.Reads[0].ProgressPages
 	}
 	return 0
 }
@@ -657,6 +668,7 @@ query GetMyUserBooks($user_id: Int!, $limit: Int!, $offset: Int!) {
     user_book_reads(where: {finished_at: {_is_null: true}}, order_by: {id: desc}, limit: 1) {
       id
       progress_seconds
+      progress_pages
     }
   }
 }`
