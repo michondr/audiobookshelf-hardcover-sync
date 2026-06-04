@@ -47,7 +47,7 @@ func groupBooks(books []db.Book) BookGroups {
 	// Surface the most recently listened-to books first in the out-of-sync list —
 	// they're the ones whose ABS progress most likely just moved (nulls last).
 	sort.SliceStable(g.ProgressDiffers, func(i, j int) bool {
-		return lastSeenAfter(g.ProgressDiffers[i].ABSLastSeenAt, g.ProgressDiffers[j].ABSLastSeenAt)
+		return lastSeenAfter(g.ProgressDiffers[i].ABSLastPlayedAt, g.ProgressDiffers[j].ABSLastPlayedAt)
 	})
 
 	// Order matched books by when they were last listened to, falling back to when
@@ -78,8 +78,8 @@ func startedOrAdded(b db.Book) *time.Time {
 // book was last listened to, or when it was added to ABS if never played —
 // coalesce(last_listened_to, added_in_abs).
 func lastListenedOrAdded(b db.Book) *time.Time {
-	if b.ABSLastSeenAt != nil {
-		return b.ABSLastSeenAt
+	if b.ABSLastPlayedAt != nil {
+		return b.ABSLastPlayedAt
 	}
 	return b.ABSAddedAt
 }

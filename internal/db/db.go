@@ -281,7 +281,7 @@ FROM books
 
 func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 	var b Book
-	var absAddedAt, absLastSeen, absStartedAt, absFinishedAt sql.NullTime
+	var absAddedAt, absLastPlayed, absStartedAt, absFinishedAt sql.NullTime
 	var absIsFinished, hcIgnored, hcIsFinished, hcDNF int
 	var hcEditionID, hcBookID sql.NullInt64
 	var hcMatchSearchedAt, hcProgressSyncedAt sql.NullTime
@@ -289,7 +289,7 @@ func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 	err := row.Scan(
 		&b.ID, &b.ABSItemID, &b.ABSTitle, &b.ABSAuthor, &b.ABSISBN, &b.ABSASIN,
 		&absAddedAt, &b.ABSTotalSeconds, &b.ABSCurrentSeconds, &absIsFinished,
-		&absLastSeen, &absStartedAt, &absFinishedAt,
+		&absLastPlayed, &absStartedAt, &absFinishedAt,
 		&hcEditionID, &hcBookID, &hcIgnored, &b.HCCandidatesJSON, &b.HCEditionDataJSON, &hcMatchSearchedAt,
 		&b.HCCurrentSeconds, &hcIsFinished, &hcDNF, &hcProgressSyncedAt,
 		&b.CreatedAt, &b.UpdatedAt,
@@ -305,8 +305,8 @@ func scanBook(row interface{ Scan(...any) error }) (Book, error) {
 	if absAddedAt.Valid {
 		b.ABSAddedAt = &absAddedAt.Time
 	}
-	if absLastSeen.Valid {
-		b.ABSLastSeenAt = &absLastSeen.Time
+	if absLastPlayed.Valid {
+		b.ABSLastPlayedAt = &absLastPlayed.Time
 	}
 	if absStartedAt.Valid {
 		b.ABSStartedAt = &absStartedAt.Time
@@ -452,7 +452,7 @@ func (d *DB) UpdateABSProgress(ctx context.Context, absItemID string, currentSec
 		UPDATE books SET
 			abs_current_seconds = ?,
 			abs_is_finished     = ?,
-			abs_last_seen_at    = ?,
+			abs_last_played_at  = ?,
 			abs_started_at      = CASE WHEN ? IS NOT NULL THEN ? ELSE abs_started_at END,
 			abs_finished_at     = CASE WHEN ? IS NOT NULL THEN ? ELSE abs_finished_at END
 		WHERE abs_item_id = ?
