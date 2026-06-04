@@ -154,6 +154,19 @@ func (h *handler) handleSetEdition(w http.ResponseWriter, r *http.Request) {
 		ISBN13:    edition.ISBN13,
 		ASIN:      edition.ASIN,
 		Slug:      edition.BookSlug(),
+		Readers:   edition.Readers(),
+		MatchedBy: "manual",
+	}
+
+	// When the user picked one of the suggested candidates (rather than typing an
+	// edition ID), keep how that candidate was originally found.
+	if book, err := h.db.GetBook(r.Context(), id); err == nil {
+		for _, c := range book.ParsedCandidates() {
+			if c.ID == editionID && c.MatchedBy != "" {
+				candidate.MatchedBy = c.MatchedBy + " (picked)"
+				break
+			}
+		}
 	}
 
 	if err := h.db.SetHCEdition(r.Context(), id, candidate); err != nil {

@@ -140,6 +140,8 @@ type CandidateEdition struct {
 	ISBN13    string `json:"isbn_13"`
 	ASIN      string `json:"asin"`
 	Slug      string `json:"slug"`
+	Readers   int    `json:"readers"`    // Hardcover users who have read this book
+	MatchedBy string `json:"matched_by"` // how this candidate was found: isbn / asin / title+author
 }
 
 func (c CandidateEdition) FormatName() string {

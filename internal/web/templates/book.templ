@@ -139,6 +139,16 @@ templ hcMatched(book db.Book) {
 						</div>
 					}
 					<div class="dates-row">{ candidateMeta(*e) }</div>
+					if e.MatchedBy != "" || e.Readers > 0 {
+						<div class="candidate-tags">
+							if e.MatchedBy != "" {
+								<span class="candidate-tag" title="How this book was matched">{ "matched by " + e.MatchedBy }</span>
+							}
+							if e.Readers > 0 {
+								<span class="candidate-tag candidate-readers" title="Hardcover users who have this edition">{ candidateReaders(*e) }</span>
+							}
+						</div>
+					}
 					<a
 						class="ext-link"
 						href={ templ.SafeURL(hcBookURL(book)) }
@@ -212,6 +222,18 @@ templ candidateRow(bookID int64, c db.CandidateEdition) {
 				<span class="candidate-meta">{ c.Author }</span>
 			}
 			<span class="candidate-meta">{ candidateMeta(c) }</span>
+			<div class="candidate-tags">
+				if c.MatchedBy != "" {
+					<span class="candidate-tag" title="How this candidate was found">{ "matched by " + c.MatchedBy }</span>
+				}
+				<span class="candidate-tag candidate-readers" title="Hardcover users who have read this book">{ candidateReaders(c) }</span>
+			</div>
+			<a
+				class="ext-link"
+				href={ templ.SafeURL(candidateURL(c)) }
+				target="_blank"
+				rel="noopener"
+			>Open in Hardcover</a>
 		</div>
 		<form
 			hx-post={ fmt.Sprintf("/book/%d/set-edition", bookID) }

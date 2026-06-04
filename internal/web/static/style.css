@@ -390,6 +390,17 @@ details[open] .section-chevron { transform: rotate(90deg); }
   text-overflow: ellipsis;
 }
 .candidate-meta { font-size: 0.75rem; color: var(--text-muted); }
+.candidate-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.2rem; }
+.candidate-tag {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.08rem 0.4rem;
+  border-radius: 99px;
+  background: var(--border);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.candidate-readers { background: var(--primary-dim); color: var(--primary); }
 
 /* ── manual edition input ── */
 .hc-manual {

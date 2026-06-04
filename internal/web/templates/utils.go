@@ -188,6 +188,43 @@ func candidateMeta(c db.CandidateEdition) string {
 	return strings.Join(parts, " · ")
 }
 
+// candidateURL deep-links a candidate edition to its Hardcover page, falling
+// back to the book page (then a search) when the edition slug is missing.
+func candidateURL(c db.CandidateEdition) string {
+	if c.Slug != "" && c.ID > 0 {
+		return fmt.Sprintf("https://hardcover.app/books/%s/editions/%d", c.Slug, c.ID)
+	}
+	if c.Slug != "" {
+		return fmt.Sprintf("https://hardcover.app/books/%s", c.Slug)
+	}
+	return hcSearchURL(c.Title, c.Author)
+}
+
+// candidateReaders renders the reader count, e.g. "1,234 readers".
+func candidateReaders(c db.CandidateEdition) string {
+	n := c.Readers
+	if n == 1 {
+		return "1 reader"
+	}
+	return fmt.Sprintf("%s readers", humanizeInt(n))
+}
+
+// humanizeInt formats an integer with thousands separators (e.g. 1234 → 1,234).
+func humanizeInt(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if n < 1000 {
+		return s
+	}
+	var out []byte
+	for i, d := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, d)
+	}
+	return string(out)
+}
+
 // hcBookURL deep-links to the exact matched edition on Hardcover. The slug is
 // cached on the edition for books matched since slug fetching was added; older
 // matches (no slug) gracefully fall back to a Hardcover search.

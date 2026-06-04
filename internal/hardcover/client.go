@@ -200,6 +200,7 @@ type Edition struct {
 	ReadingFormatID int             `json:"reading_format_id"`
 	AudioSeconds    int             `json:"audio_seconds"`
 	Pages           int             `json:"pages"`
+	UsersCount      int             `json:"users_count"`
 	ReleaseYear     int             `json:"release_year"`
 	Image           *imageField     `json:"image"`
 	Publisher       *publisherField `json:"publisher"`
@@ -241,6 +242,12 @@ func (e Edition) BookSlug() string {
 	return ""
 }
 
+// Readers returns how many Hardcover users have this specific edition (matches
+// the per-edition count shown on Hardcover's editions page).
+func (e Edition) Readers() int {
+	return e.UsersCount
+}
+
 func (e Edition) YearStr() string {
 	if e.ReleaseYear > 0 {
 		return fmt.Sprintf("%d", e.ReleaseYear)
@@ -258,7 +265,7 @@ func (e Edition) FormatName() string {
 // ── queries ────────────────────────────────────────────────────────────────
 
 const editionFields = `
-  id book_id isbn_13 isbn_10 asin reading_format_id audio_seconds pages release_year
+  id book_id isbn_13 isbn_10 asin reading_format_id audio_seconds pages release_year users_count
   image { url }
   publisher { name }
   book {

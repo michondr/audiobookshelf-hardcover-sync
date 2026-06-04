@@ -21,6 +21,9 @@ templ bookSections(g BookGroups) {
 	if len(g.NeedsAction) > 0 {
 		@bookSection("Needs your input", "warning", false, g.NeedsAction)
 	}
+	if len(g.Pending) > 0 {
+		@bookSection("Pending match", "info", false, g.Pending)
+	}
 	if len(g.Matched) > 0 {
 		@bookSection("Matched", "success", false, g.Matched)
 	}
@@ -29,9 +32,6 @@ templ bookSections(g BookGroups) {
 	}
 	if len(g.Finished) > 0 {
 		@bookSection("Finished", "muted", true, g.Finished)
-	}
-	if len(g.Pending) > 0 {
-		@bookSection("Pending match", "info", false, g.Pending)
 	}
 	if len(g.Ignored) > 0 {
 		@bookSection("Ignored", "muted", true, g.Ignored)

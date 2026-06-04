@@ -397,21 +397,25 @@ func (s *Service) loadLibraryIndex(ctx context.Context) (*libraryIndex, error) {
 // the user's Hardcover library, or nil if not found.
 func (s *Service) matchInLibrary(ctx context.Context, book db.Book, idx *libraryIndex) *db.CandidateEdition {
 	var ub *hardcover.UserBookSummary
+	matchedBy := ""
 
 	if book.ABSISBN != "" {
 		if m, ok := idx.byISBN[book.ABSISBN]; ok {
 			ub = &m
+			matchedBy = "isbn (library)"
 		}
 	}
 	if ub == nil && book.ABSASIN != "" {
 		if m, ok := idx.byASIN[book.ABSASIN]; ok {
 			ub = &m
+			matchedBy = "asin (library)"
 		}
 	}
 	if ub == nil {
 		if t := normalizeTitle(book.ABSTitle); t != "" {
 			if m, ok := idx.byTitle[t]; ok && authorsPlausible(book, m) {
 				ub = &m
+				matchedBy = "title+author (library)"
 			}
 		}
 	}
@@ -423,11 +427,11 @@ func (s *Service) matchInLibrary(ctx context.Context, book db.Book, idx *library
 	// and the user's shelf edition is often the print/ebook. Fall back to whatever
 	// edition they actually have if no audiobook edition exists.
 	if eds, err := s.hc.GetEditionsByBookID(ctx, ub.BookID); err == nil && len(eds) > 0 {
-		c := editionToCandidate(eds[0])
+		c := editionToCandidate(eds[0], matchedBy)
 		return &c
 	}
 	if ub.Edition != nil {
-		c := editionToCandidate(*ub.Edition)
+		c := editionToCandidate(*ub.Edition, matchedBy)
 		return &c
 	}
 	return nil
@@ -437,13 +441,15 @@ func (s *Service) searchHC(ctx context.Context, book db.Book) ([]db.CandidateEdi
 	seen := map[int64]bool{}
 	var result []db.CandidateEdition
 
-	add := func(editions []hardcover.Edition) {
+	// matchedBy records how each candidate was found (isbn / asin / title+author);
+	// the first search to surface an edition wins, matching the search order.
+	add := func(editions []hardcover.Edition, matchedBy string) {
 		for _, e := range editions {
 			if seen[e.ID] {
 				continue
 			}
 			seen[e.ID] = true
-			result = append(result, editionToCandidate(e))
+			result = append(result, editionToCandidate(e, matchedBy))
 		}
 	}
 
@@ -452,7 +458,7 @@ func (s *Service) searchHC(ctx context.Context, book db.Book) ([]db.CandidateEdi
 		if err != nil {
 			s.log.Warn("HC ISBN search", "isbn", book.ABSISBN, "err", err)
 		} else {
-			add(eds)
+			add(eds, "isbn")
 		}
 	}
 
@@ -461,7 +467,7 @@ func (s *Service) searchHC(ctx context.Context, book db.Book) ([]db.CandidateEdi
 		if err != nil {
 			s.log.Warn("HC ASIN search", "asin", book.ABSASIN, "err", err)
 		} else {
-			add(eds)
+			add(eds, "asin")
 		}
 	}
 
@@ -471,14 +477,14 @@ func (s *Service) searchHC(ctx context.Context, book db.Book) ([]db.CandidateEdi
 		if err != nil {
 			s.log.Warn("HC title search", "title", book.ABSTitle, "err", err)
 		} else {
-			add(eds)
+			add(eds, "title+author")
 		}
 	}
 
 	return result, nil
 }
 
-func editionToCandidate(e hardcover.Edition) db.CandidateEdition {
+func editionToCandidate(e hardcover.Edition, matchedBy string) db.CandidateEdition {
 	return db.CandidateEdition{
 		ID:        e.ID,
 		BookID:    e.BookID,
@@ -491,6 +497,8 @@ func editionToCandidate(e hardcover.Edition) db.CandidateEdition {
 		ISBN13:    e.ISBN13,
 		ASIN:      e.ASIN,
 		Slug:      e.BookSlug(),
+		Readers:   e.Readers(),
+		MatchedBy: matchedBy,
 	}
 }
 
