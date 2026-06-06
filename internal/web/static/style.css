@@ -80,6 +80,7 @@ body {
 .switch input:checked + .switch-track .switch-thumb { transform: translateX(16px); }
 .switch input:focus-visible + .switch-track { outline: 2px solid var(--primary); outline-offset: 2px; }
 .switch-text { font-size: 0.8rem; color: var(--text-muted); }
+.switch--disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── layout ── */
 .content { max-width: 1080px; margin: 0 auto; padding: 1.5rem; }
@@ -98,6 +99,48 @@ body {
 }
 .toast.error { background: var(--danger-dim); border-color: var(--danger); color: var(--text); }
 @keyframes slideIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }
+
+/* ── modal ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.modal-box {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  max-width: 420px;
+  width: 90%;
+  position: relative;
+  box-shadow: 0 8px 32px rgba(0,0,0,.6);
+}
+.modal-box--success { border-color: var(--success); }
+.modal-box--error   { border-color: var(--danger); }
+.modal-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  color: var(--text-muted);
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+}
+.modal-close:hover { color: var(--text); }
+.modal-title { font-weight: 600; margin-bottom: 0.5rem; }
+.modal-body  { font-size: 0.875rem; color: var(--text-muted); margin-bottom: 0.25rem; }
+.modal-result { font-size: 0.875rem; margin-top: 0.75rem; }
+.modal-result--success { color: var(--success); }
+.modal-result--error   { color: var(--danger); }
+.modal-footer { display: flex; align-items: center; gap: 0.5rem; margin-top: 1.25rem; }
 
 /* ── book card ── */
 .book-card {

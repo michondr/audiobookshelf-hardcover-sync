@@ -1,6 +1,6 @@
 package templates
 
-templ Layout(nextSync string, autoSync bool) {
+templ Layout(nextSync string, autoSync bool, emailNotify bool, smtpConfigured bool) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
@@ -32,6 +32,22 @@ templ Layout(nextSync string, autoSync bool) {
 						<span class="switch-track"><span class="switch-thumb"></span></span>
 						<span class="switch-text">Auto-sync progress</span>
 					</label>
+					<label
+						class={ "switch", templ.KV("switch--disabled", !smtpConfigured) }
+						title={ emailNotifyTitle(smtpConfigured) }
+					>
+						<input
+							type="checkbox"
+							name="enabled"
+							checked?={ emailNotify }
+							disabled?={ !smtpConfigured }
+							hx-post="/settings/email-notify"
+							hx-target="#sync-toast"
+							hx-swap="innerHTML"
+						/>
+						<span class="switch-track"><span class="switch-thumb"></span></span>
+						<span class="switch-text">Email notifications</span>
+					</label>
 					<span class="header-sep" aria-hidden="true"></span>
 					<button
 						class="btn btn-primary btn-sm"
@@ -54,6 +70,7 @@ templ Layout(nextSync string, autoSync bool) {
 				</div>
 			</header>
 			<div id="sync-toast"></div>
+			<div id="modal"></div>
 			<main class="content">
 				{ children... }
 			</main>

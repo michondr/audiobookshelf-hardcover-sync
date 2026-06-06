@@ -16,6 +16,6 @@ COPY --from=builder /app/server .
 RUN mkdir -p /data
 VOLUME ["/data"]
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=2s --timeout=5s --start-period=1s --retries=5 \
     CMD wget -q -O /dev/null "http://localhost:${PORT:-8080}/healthz" || exit 1
 ENTRYPOINT ["./server"]

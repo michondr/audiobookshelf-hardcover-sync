@@ -101,6 +101,14 @@ func lastSeenAfter(a, b *time.Time) bool {
 // auto-sync and this UI grouping share one definition.
 func progressDiffers(b db.Book) bool { return b.ProgressDiffers() }
 
+// emailNotifyTitle returns the tooltip for the email-notifications toggle.
+func emailNotifyTitle(smtpConfigured bool) string {
+	if !smtpConfigured {
+		return "Email notifications require SMTP_HOST and SMTP_TO to be configured"
+	}
+	return "When on, the scheduled sync sends an email summarising newly matched books and progress updates"
+}
+
 // nextSyncTitle describes what the next scheduled sync will do, reflecting the
 // auto-sync toggle, for the header's tooltip.
 func nextSyncTitle(autoSync bool) string {

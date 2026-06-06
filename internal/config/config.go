@@ -13,6 +13,17 @@ type Config struct {
 	CronTimezone    string
 	DBPath          string
 	Port            string
+	SMTPHost        string
+	SMTPPort        string
+	SMTPUser        string
+	SMTPPass        string
+	SMTPFrom        string
+	SMTPTo          string
+}
+
+// SMTPEnabled reports whether SMTP is configured (host and recipient are required).
+func (c *Config) SMTPEnabled() bool {
+	return c.SMTPHost != "" && c.SMTPTo != ""
 }
 
 func Load() (*Config, error) {
@@ -24,6 +35,12 @@ func Load() (*Config, error) {
 		CronTimezone:   getEnvOr("CRON_TIMEZONE", "Europe/Prague"),
 		DBPath:         getEnvOr("DB_PATH", "./app.db"),
 		Port:           getEnvOr("PORT", "8080"),
+		SMTPHost:       os.Getenv("SMTP_HOST"),
+		SMTPPort:       getEnvOr("SMTP_PORT", "587"),
+		SMTPUser:       os.Getenv("SMTP_USER"),
+		SMTPPass:       os.Getenv("SMTP_PASS"),
+		SMTPFrom:       os.Getenv("SMTP_FROM"),
+		SMTPTo:         os.Getenv("SMTP_TO"),
 	}
 
 	if c.ABSUrl == "" {

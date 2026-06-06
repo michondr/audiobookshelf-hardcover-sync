@@ -38,7 +38,7 @@ func (s *Service) MatchUnmatchedInBackground() bool {
 		defer s.matching.Store(false)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		if err := s.MatchUnmatched(ctx); err != nil {
+		if _, err := s.MatchUnmatched(ctx); err != nil {
 			s.log.Error("background match", "err", err)
 		}
 		if err := s.RefreshHCProgress(ctx); err != nil {
@@ -79,6 +79,13 @@ func (s *Service) RefreshFromABS(ctx context.Context) error {
 	return nil
 }
 
+// MatchStats summarises the outcome of a MatchUnmatched pass.
+type MatchStats struct {
+	Matched    []string // titles of newly-matched books
+	Candidates int      // books with multiple HC hits (need manual selection)
+	NotFound   int      // books with no HC result
+}
+
 // MatchUnmatched matches every not-yet-matched ABS book to a Hardcover edition.
 //
 // For each book it tries, in order:
@@ -87,13 +94,13 @@ func (s *Service) RefreshFromABS(ctx context.Context) error {
 //  2. a Hardcover catalog search (ISBN → ASIN → title+author): one result
 //     auto-matches, several become candidates to pick from, none marks the book
 //     "searched" so the UI can offer a manual edition-ID input.
-func (s *Service) MatchUnmatched(ctx context.Context) error {
+func (s *Service) MatchUnmatched(ctx context.Context) (MatchStats, error) {
 	books, err := s.db.ListUnmatchedBooks(ctx)
 	if err != nil {
-		return fmt.Errorf("list unmatched: %w", err)
+		return MatchStats{}, fmt.Errorf("list unmatched: %w", err)
 	}
 	if len(books) == 0 {
-		return nil
+		return MatchStats{}, nil
 	}
 
 	// Load the user's existing Hardcover library once so we can match against
@@ -104,7 +111,8 @@ func (s *Service) MatchUnmatched(ctx context.Context) error {
 		s.log.Warn("load HC library", "err", err)
 	}
 
-	var matched, viaLibrary, candidates, notFound int
+	var stats MatchStats
+	var viaLibrary int
 	for _, book := range books {
 		// 1. Already in the user's Hardcover library?
 		if lib != nil {
@@ -112,7 +120,7 @@ func (s *Service) MatchUnmatched(ctx context.Context) error {
 				if err := s.db.SetHCEdition(ctx, book.ID, *cand); err != nil {
 					s.log.Error("set edition (library)", "book_id", book.ID, "err", err)
 				}
-				matched++
+				stats.Matched = append(stats.Matched, book.ABSTitle)
 				viaLibrary++
 				continue
 			}
@@ -123,7 +131,7 @@ func (s *Service) MatchUnmatched(ctx context.Context) error {
 		if err != nil {
 			s.log.Warn("HC search failed", "book_id", book.ID, "title", book.ABSTitle, "err", err)
 			_ = s.db.SetHCMatchSearched(ctx, book.ID)
-			notFound++
+			stats.NotFound++
 			continue
 		}
 
@@ -132,23 +140,23 @@ func (s *Service) MatchUnmatched(ctx context.Context) error {
 			if err := s.db.SetHCMatchSearched(ctx, book.ID); err != nil {
 				s.log.Error("set searched", "book_id", book.ID, "err", err)
 			}
-			notFound++
+			stats.NotFound++
 		case 1:
 			if err := s.db.SetHCEdition(ctx, book.ID, found[0]); err != nil {
 				s.log.Error("set edition", "book_id", book.ID, "err", err)
 			}
-			matched++
+			stats.Matched = append(stats.Matched, book.ABSTitle)
 		default:
 			if err := s.db.SetHCCandidates(ctx, book.ID, found); err != nil {
 				s.log.Error("set candidates", "book_id", book.ID, "err", err)
 			}
-			candidates++
+			stats.Candidates++
 		}
 	}
 	s.log.Info("match pass complete",
-		"books", len(books), "matched", matched, "via_library", viaLibrary,
-		"candidates", candidates, "not_found", notFound)
-	return nil
+		"books", len(books), "matched", len(stats.Matched), "via_library", viaLibrary,
+		"candidates", stats.Candidates, "not_found", stats.NotFound)
+	return stats, nil
 }
 
 // RefreshHCProgress pulls the current reading progress from Hardcover for every
@@ -286,14 +294,14 @@ func (s *Service) PushProgress(ctx context.Context, bookID int64, reread bool) e
 
 // AutoSyncOutOfSync pushes ABS progress to Hardcover for every matched book whose
 // progress has drifted (the "Progress out of sync" category), skipping books
-// marked Did-Not-Finish. It returns how many books were synced. A single book's
+// marked Did-Not-Finish. It returns the titles of synced books. A single book's
 // failure is logged and skipped rather than aborting the whole pass.
-func (s *Service) AutoSyncOutOfSync(ctx context.Context) (int, error) {
+func (s *Service) AutoSyncOutOfSync(ctx context.Context) ([]string, error) {
 	matched, err := s.db.ListMatchedBooks(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("list matched: %w", err)
+		return nil, fmt.Errorf("list matched: %w", err)
 	}
-	synced := 0
+	var synced []string
 	for _, b := range matched {
 		if b.HCDNF || !b.ProgressDiffers() {
 			continue
@@ -302,10 +310,10 @@ func (s *Service) AutoSyncOutOfSync(ctx context.Context) (int, error) {
 			s.log.Warn("auto-sync push", "book_id", b.ID, "title", b.ABSTitle, "err", err)
 			continue
 		}
-		synced++
+		synced = append(synced, b.ABSTitle)
 	}
-	if synced > 0 {
-		s.log.Info("auto-synced out-of-sync books", "count", synced)
+	if len(synced) > 0 {
+		s.log.Info("auto-synced out-of-sync books", "count", len(synced))
 	}
 	return synced, nil
 }

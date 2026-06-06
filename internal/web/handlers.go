@@ -16,12 +16,19 @@ import (
 )
 
 type handler struct {
-	db       *db.DB
-	abs      *abs.Client
-	hc       *hardcover.Client
-	sync     *syncsvc.Service
-	log      *slog.Logger
-	nextSync func() time.Time
+	db             *db.DB
+	abs            *abs.Client
+	hc             *hardcover.Client
+	sync           *syncsvc.Service
+	log            *slog.Logger
+	nextSync       func() time.Time
+	smtpConfigured bool
+	mailer         mailerSender
+	smtpTo         string
+}
+
+type mailerSender interface {
+	Send(subject, body string) error
 }
 
 // handleHealthz is a liveness/readiness probe: it returns 200 only when the
@@ -60,8 +67,13 @@ func (h *handler) handleIndex(w http.ResponseWriter, r *http.Request) {
 		h.log.Warn("read auto-sync setting", "err", err)
 	}
 
+	emailNotify, err := h.db.GetBoolSetting(r.Context(), db.SettingEmailNotify)
+	if err != nil {
+		h.log.Warn("read email-notify setting", "err", err)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = templates.Index(books, nextSync, autoSync).Render(r.Context(), w)
+	_ = templates.Index(books, nextSync, autoSync, emailNotify, h.smtpConfigured).Render(r.Context(), w)
 }
 
 // handleSetAutoSync persists the "auto sync progress to HC" toggle. The checkbox
@@ -79,6 +91,42 @@ func (h *handler) handleSetAutoSync(w http.ResponseWriter, r *http.Request) {
 	} else {
 		fmt.Fprint(w, `<div class="toast">Auto-sync disabled.</div>`)
 	}
+}
+
+func (h *handler) handleSetEmailNotify(w http.ResponseWriter, r *http.Request) {
+	enabled := r.FormValue("enabled") != ""
+	if err := h.db.SetBoolSetting(r.Context(), db.SettingEmailNotify, enabled); err != nil {
+		h.log.Error("save email-notify setting", "err", err)
+		http.Error(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if enabled {
+		// Toast goes to #sync-toast (hx-target); OOB swap opens the test modal.
+		fmt.Fprint(w, `<div class="toast">Email notifications enabled.</div>`)
+		fmt.Fprint(w, `<div id="modal" hx-swap-oob="innerHTML">`)
+		_ = templates.EmailNotifyModal(h.smtpTo, "", "").Render(r.Context(), w)
+		fmt.Fprint(w, `</div>`)
+	} else {
+		fmt.Fprint(w, `<div class="toast">Email notifications disabled.</div>`)
+	}
+}
+
+func (h *handler) handleTestEmail(w http.ResponseWriter, r *http.Request) {
+	if h.mailer == nil {
+		http.Error(w, "SMTP not configured", http.StatusBadRequest)
+		return
+	}
+	state, errMsg := "success", ""
+	if err := h.mailer.Send(
+		"Test — ABS→Hardcover notifications",
+		"This is a test email confirming your ABS→Hardcover sync notifications are working.",
+	); err != nil {
+		state = "error"
+		errMsg = err.Error()
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = templates.EmailNotifyModal(h.smtpTo, state, errMsg).Render(r.Context(), w)
 }
 
 func (h *handler) handleAbsCoverProxy(w http.ResponseWriter, r *http.Request) {

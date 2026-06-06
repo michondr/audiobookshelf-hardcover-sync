@@ -94,12 +94,30 @@ run also pushes progress. When **on**, each cron run (after pulling from ABS and
 re-reading Hardcover) automatically syncs every book in *Progress out of sync*.
 When **off**, the schedule only refreshes/matches and you sync each book by hand.
 
+### Email notifications
+
+A second toggle — **Email notifications** — sends a plain-text summary email
+after each scheduled sync whenever something changed. It is disabled (greyed
+out) until `SMTP_HOST` and `SMTP_TO` are set in the environment.
+
+When you enable the toggle a modal opens showing the recipient address and a
+**Send test email** button so you can verify the SMTP configuration before the
+next sync fires. 
+
+The email is sent only when there is something to report — it is skipped for
+runs where nothing changed. It covers:
+
+- Books whose progress was pushed to Hardcover (auto-sync)
+- Books newly matched to a Hardcover edition
+- Books with multiple Hardcover candidates (need manual selection)
+- Books searched but not found on Hardcover
+
 ### When it runs
 
 - **Manually:** **Refresh from ABS** (pull library + progress, match new books)
   and **Re-match** (re-run matching for un-matched/un-ignored books).
 - **On a schedule:** the cron job (`CRON_SCHEDULE`) does Refresh → Match →
-  re-read Hardcover progress → optional auto-sync.
+  re-read Hardcover progress → optional auto-sync → optional email summary.
 
 ---
 
@@ -110,7 +128,7 @@ file next to `docker-compose.yml` (see `.env.example`).
 
 ### 1. Run
 
-add to your docker-compose.yml:
+Add to your docker-compose.yml:
 
 ```yaml
 services:
@@ -128,16 +146,17 @@ services:
       CRON_TIMEZONE: ${CRON_TIMEZONE:-Europe/Prague}
       DB_PATH: /data/app.db
       PORT: 8080
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TO: ${SMTP_TO:-}
     volumes:
       - ./.data:/data
-#    healthcheck:  #can be omitted, is present in the built image
-#      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
-#      interval: 30s
-#      timeout: 5s
-#      start_period: 10s
-#      retries: 3
 ```
 
+Image already has fast healthcheck 
 
 ### 2. First use
 

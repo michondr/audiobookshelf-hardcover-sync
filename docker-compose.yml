@@ -1,10 +1,8 @@
 services:
   abs-sync:
     build: .
-    container_name: abs-sync
+    container_name: abs-sync-hc
     restart: unless-stopped
-    ports:
-      - "8080:8080"
     environment:
       ABS_URL: ${ABS_URL?:}
       ABS_TOKEN: ${ABS_TOKEN?:}
@@ -13,5 +11,11 @@ services:
       CRON_TIMEZONE: ${CRON_TIMEZONE:-Europe/Prague}
       DB_PATH: /data/app.db
       PORT: 8080
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TO: ${SMTP_TO:-}
     volumes:
       - ./.data:/data

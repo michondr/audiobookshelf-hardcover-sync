@@ -139,6 +139,10 @@ func (d *DB) Ping(ctx context.Context) error { return d.sql.PingContext(ctx) }
 // toggle: when "1", the cron run pushes ABS progress for out-of-sync books.
 const SettingAutoSyncProgress = "auto_sync_progress"
 
+// SettingEmailNotify is the settings key for the email-notification toggle:
+// when "1", the cron run sends an SMTP email summarising what changed.
+const SettingEmailNotify = "email_notify"
+
 // GetBoolSetting reads a boolean setting, defaulting to false when unset.
 func (d *DB) GetBoolSetting(ctx context.Context, key string) (bool, error) {
 	var value string

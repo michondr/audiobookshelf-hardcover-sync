@@ -23,14 +23,20 @@ func NewServer(
 	syncService *syncsvc.Service,
 	log *slog.Logger,
 	nextSync func() time.Time,
+	smtpConfigured bool,
+	mailer mailerSender,
+	smtpTo string,
 ) http.Handler {
 	h := &handler{
-		db:       database,
-		abs:      absClient,
-		hc:       hcClient,
-		sync:     syncService,
-		log:      log,
-		nextSync: nextSync,
+		db:             database,
+		abs:            absClient,
+		hc:             hcClient,
+		sync:           syncService,
+		log:            log,
+		nextSync:       nextSync,
+		smtpConfigured: smtpConfigured,
+		mailer:         mailer,
+		smtpTo:         smtpTo,
 	}
 
 	mux := http.NewServeMux()
@@ -45,6 +51,8 @@ func NewServer(
 	mux.HandleFunc("POST /sync", h.handleSyncAll)
 	mux.HandleFunc("POST /rematch", h.handleRematch)
 	mux.HandleFunc("POST /settings/auto-sync", h.handleSetAutoSync)
+	mux.HandleFunc("POST /settings/email-notify", h.handleSetEmailNotify)
+	mux.HandleFunc("POST /settings/email-notify/test", h.handleTestEmail)
 	mux.HandleFunc("POST /book/{id}/set-edition", h.handleSetEdition)
 	mux.HandleFunc("POST /book/{id}/sync-progress", h.handleSyncProgress)
 	mux.HandleFunc("POST /book/{id}/reread", h.handleAddReread)

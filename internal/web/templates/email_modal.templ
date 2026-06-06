@@ -1,0 +1,31 @@
+package templates
+
+// EmailNotifyModal renders the test-email modal.
+// state: "" = initial, "success" = test sent OK, "error" = test failed.
+templ EmailNotifyModal(smtpTo, state, errMsg string) {
+	<div class="modal-overlay" onclick="if(event.target===this)document.getElementById('modal').innerHTML=''">
+		<div class={ "modal-box", templ.KV("modal-box--success", state == "success"), templ.KV("modal-box--error", state == "error") }>
+			<button class="modal-close" onclick="document.getElementById('modal').innerHTML=''" title="Close">✕</button>
+			<p class="modal-title">Email notifications enabled</p>
+			<p class="modal-body">
+				A sync summary will be sent to <strong>{ smtpTo }</strong> after each scheduled sync.
+			</p>
+			if state == "success" {
+				<p class="modal-result modal-result--success">Test email sent successfully.</p>
+			} else if state == "error" {
+				<p class="modal-result modal-result--error">Failed to send: { errMsg }</p>
+			}
+			<div class="modal-footer">
+				<button
+					class="btn btn-primary btn-sm"
+					hx-post="/settings/email-notify/test"
+					hx-target="#modal"
+					hx-swap="innerHTML"
+					hx-indicator="#modal-spinner"
+				>Send test email</button>
+				<span id="modal-spinner" class="htmx-indicator">sending…</span>
+				<button class="btn btn-secondary btn-sm" onclick="document.getElementById('modal').innerHTML=''">Close</button>
+			</div>
+		</div>
+	</div>
+}
