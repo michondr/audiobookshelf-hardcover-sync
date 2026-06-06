@@ -95,19 +95,21 @@ func (h *handler) handleSetAutoSync(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleSetEmailNotify(w http.ResponseWriter, r *http.Request) {
 	enabled := r.FormValue("enabled") != ""
-	if err := h.db.SetBoolSetting(r.Context(), db.SettingEmailNotify, enabled); err != nil {
-		h.log.Error("save email-notify setting", "err", err)
-		http.Error(w, "db error", http.StatusInternalServerError)
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if enabled {
-		// Toast goes to #sync-toast (hx-target); OOB swap opens the test modal.
-		fmt.Fprint(w, `<div class="toast">Email notifications enabled.</div>`)
+		// Don't save yet — require a successful test first.
+		// OOB resets the toggle to unchecked and opens the modal.
+		fmt.Fprint(w, `<div class="toast">Verify your SMTP config with a test email to enable notifications.</div>`)
 		fmt.Fprint(w, `<div id="modal" hx-swap-oob="innerHTML">`)
 		_ = templates.EmailNotifyModal(h.smtpTo, "", "").Render(r.Context(), w)
 		fmt.Fprint(w, `</div>`)
+		_ = templates.EmailNotifyToggleOOB(false, true).Render(r.Context(), w)
 	} else {
+		if err := h.db.SetBoolSetting(r.Context(), db.SettingEmailNotify, false); err != nil {
+			h.log.Error("save email-notify setting", "err", err)
+			http.Error(w, "db error", http.StatusInternalServerError)
+			return
+		}
 		fmt.Fprint(w, `<div class="toast">Email notifications disabled.</div>`)
 	}
 }
@@ -126,7 +128,16 @@ func (h *handler) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 		errMsg = err.Error()
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if state == "success" {
+		// Test passed: now save the setting and check the toggle.
+		if err := h.db.SetBoolSetting(r.Context(), db.SettingEmailNotify, true); err != nil {
+			h.log.Error("save email-notify setting after test", "err", err)
+		}
+	}
 	_ = templates.EmailNotifyModal(h.smtpTo, state, errMsg).Render(r.Context(), w)
+	if state == "success" {
+		_ = templates.EmailNotifyToggleOOB(true, true).Render(r.Context(), w)
+	}
 }
 
 func (h *handler) handleAbsCoverProxy(w http.ResponseWriter, r *http.Request) {
